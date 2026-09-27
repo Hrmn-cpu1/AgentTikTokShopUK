@@ -18,10 +18,12 @@ export function resolveOpportunityAuthority(
  const states=subjects.map(subject=>registry.resolve(subject,nowIso));
  const blockers=states.filter(x=>x.state!=='VERIFIED').map(x=>x.subject+':'+x.state);
  const marketEligible=states.every(x=>x.state==='VERIFIED');
- const accountRiskAcceptable=marketEligible;
+ const risk=registry.resolve('ACCOUNT_RISK',nowIso);
+ const accountRiskAcceptable=risk.state==='VERIFIED';
+ if(risk.state!=='VERIFIED') blockers.push('ACCOUNT_RISK:'+risk.state);
  const policy=evaluateAction('SCORE',{...context,marketEligible,accountRiskAcceptable});
  return {
   marketEligible,accountRiskAcceptable,policyAllowed:policy==='ALLOW',
-  evidenceIds:states.flatMap(x=>x.evidenceId?[x.evidenceId]:[]),blockers,
+  evidenceIds:[...states,risk].flatMap(x=>x.evidenceId?[x.evidenceId]:[]),blockers,
  };
 }
