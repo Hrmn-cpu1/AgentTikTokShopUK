@@ -17,13 +17,14 @@ export function freezeRealExp001(
   input: RealOpportunityInput,
   result: RealOpportunityResult,
   frozenAt: string,
+  additionalEvidenceRefs: readonly string[] = [],
 ): FrozenExp001Candidate {
   if (result.allocation.decision !== 'ALLOCATE') throw new Error('EXP-001 cannot be frozen without an ALLOCATE decision');
   if (result.productId !== input.product.productId) throw new Error('Opportunity/product trace mismatch');
   if (!result.fresh) throw new Error('EXP-001 requires fresh product evidence');
   if (!Number.isFinite(Date.parse(frozenAt))) throw new Error('frozenAt must be a valid timestamp');
 
-  const evidenceRefs = [input.product.listingRef];
+  const evidenceRefs = [...new Set([input.product.listingRef, ...additionalEvidenceRefs].filter(ref => ref.trim()))];
   if (!evidenceRefs[0]?.trim()) throw new Error('EXP-001 requires product evidence reference');
 
   const experiment: ExperimentSpec = {
