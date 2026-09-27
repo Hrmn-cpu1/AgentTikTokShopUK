@@ -61,6 +61,12 @@ export class RealityEvidenceRegistry {
     return { subject, state: item.state, evidenceId: item.evidenceId, reason: 'State backed by recorded evidence.' };
   }
 
+  allEvidence(): RealityEvidence[] {
+    return [...this.evidence.values()]
+      .sort((a,b)=>a.observedAt.localeCompare(b.observedAt)||a.evidenceId.localeCompare(b.evidenceId))
+      .map(item=>structuredClone(item));
+  }
+
   unresolved(subjects: RealitySubject[], nowIso: string): RealityState[] {
     return subjects.map((subject) => this.resolve(subject, nowIso)).filter((x) => x.state !== 'VERIFIED');
   }
