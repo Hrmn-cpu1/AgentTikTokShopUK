@@ -1,6 +1,8 @@
 import { useState } from 'react';
 import { Bell, Bot, Check, ChevronRight, CircleDollarSign, FlaskConical, Home, Radar, Settings2, ShieldCheck, Sparkles, TrendingUp, WalletCards, X } from 'lucide-react';
-import { defaultEligibility, eligibilityLabels, nextRequirementState, resolveEligibility, type EligibilityRequirement, type EligibilitySnapshot } from './domain/eligibility';
+import { RealityEvidenceRegistry, type RealitySubject } from './domain/realityEvidenceRegistry';
+import { ingestOperatorEvidence } from './domain/operatorEvidenceIntake';
+import { orchestrateReadiness } from './domain/realityReadinessOrchestrator';
 
 type Page = 'home'|'radar'|'opportunity'|'tests'|'money'|'setup';
 const products = [
@@ -34,23 +36,40 @@ function OpportunityPage({go}:{go:(p:Page)=>void}){const p=products[0];return <>
  <button className="primary" onClick={()=>go('tests')}><FlaskConical/> Create EXP-001</button></main></>}
 function TestsPage(){return <><Header title="Experiments"/><main><div className="demo">SAFE MODE · EXTERNAL EXECUTION OFF</div><section className="card experiment"><div className="row"><Pill>EXP-001</Pill><Pill tone="yellow">DRAFT</Pill></div><h2>Demo-first creative test</h2><p>Hypothesis: showing the product result in the first 2 seconds will create stronger commerce intent than a problem-first opening.</p><div className="steps"><div className="done"><Check/>Opportunity selected</div><div className="done"><Check/>Economics calculated</div><div><Sparkles/>Creative strategy pending</div><div><ShieldCheck/>Human approval required</div></div><div className="limit"><Metric label="Capital limit" value="£8.00"/><Metric label="Loss limit" value="£8.00"/></div><button className="primary"><Sparkles/> Generate creative strategy</button></section></main></>}
 function MoneyPage(){return <><Header title="Money"/><main><div className="demo">DEMO LEDGER · WITHDRAWAL REMAINS MANUAL</div><section className="hero money"><div><span>Realized contribution</span><h1>£0.00</h1><p>Settled commission − experiment costs</p></div><CircleDollarSign size={42}/></section><div className="grid3"><Metric label="Expected" value="£0.00"/><Metric label="Pending" value="£0.00"/><Metric label="Settled" value="£0.00"/></div><section className="card"><h3>Decision → Money trace</h3><div className="timeline"><b>Experiment</b><i/><b>Order</b><i/><b>Delivery</b><i/><b>Settlement</b><i/><b>Profit</b></div><p className="muted">No economic event recorded yet. Orders will never be counted as realized profit before settlement.</p></section><section className="card"><h3>Available for withdrawal</h3><div className="withdraw"><strong>£0.00</strong><Pill tone="blue">MANUAL</Pill></div><p>The agent never withdraws, transfers or changes payout destinations in V0.</p></section></main></>}
+const realityLabels: Record<RealitySubject,string> = {
+ UK_ACCOUNT_ELIGIBILITY:'UK account eligibility', IDENTITY_KYC:'Identity / KYC', AFFILIATE_ACCESS:'Affiliate access',
+ PAYOUT_METHOD:'Payout method', REAL_PRODUCT:'Real product selected', PRODUCT_FRESHNESS:'Product evidence freshness',
+ SUPPLY:'Supply availability', CREATIVE_APPROVAL:'Creative approval', PRODUCT_CLAIMS:'Product claims',
+ CAPITAL_BOUND:'Capital bound', LOSS_BOUND:'Loss bound',
+};
+const realitySubjects=Object.keys(realityLabels) as RealitySubject[];
+
 function SetupPage(){
- const [eligibility,setEligibility]=useState<EligibilitySnapshot>(defaultEligibility);
- const requirements=Object.keys(eligibilityLabels) as EligibilityRequirement[];
- const overall=resolveEligibility(eligibility);
- const tone=overall==='ELIGIBLE'?'green':overall==='BLOCKED'?'blocked':'yellow';
- const update=(key:EligibilityRequirement)=>setEligibility(current=>({...current,[key]:nextRequirementState(current[key])}));
- const unresolved=requirements.filter(key=>eligibility[key]!=='VERIFIED');
- const next=unresolved[0];
- const verified=requirements.length-unresolved.length;
+ const [registry]=useState(()=>new RealityEvidenceRegistry());
+ const [,render]=useState(0);
+ const now=new Date().toISOString();
+ const decision=orchestrateReadiness(registry,now,true);
+ const states=realitySubjects.map(subject=>registry.resolve(subject,now));
+ const verified=states.filter(x=>x.state==='VERIFIED').length;
+ const next=decision.nextProbe?.subject ?? null;
+ const tone=decision.launch.readiness==='READY'?'green':decision.launch.readiness==='BLOCKED'?'blocked':'yellow';
+
+ const record=(subject:RealitySubject,state:'VERIFIED'|'BLOCKED'|'UNKNOWN')=>{
+   ingestOperatorEvidence(registry,{
+     evidenceId:`operator:${subject}:${Date.now()}`, subject, state, source:'OPERATOR_VERIFIED',
+     observedAt:new Date().toISOString(), reference:`operator-check:${subject.toLowerCase()}`,
+   });
+   render(x=>x+1);
+ };
+
  return <><Header title="UK Reality Check"/><main>
-  <section className="setup-hero"><Settings2/><div><h2>EXP-001 launch checklist</h2><p>Verify reality from your phone. No document, password or bank credential is stored here.</p></div></section>
-  <section className="card readiness-card"><div className="readiness-top"><div><small>VERIFIED REALITY</small><h2>{verified}/{requirements.length}</h2></div><Pill tone={overall==='ELIGIBLE'?'green':overall==='BLOCKED'?'blocked':'yellow'}>{overall}</Pill></div><div className="progress"><i style={{width:`${Math.round((verified/requirements.length)*100)}%`}}/></div></section>
-  {next&&overall!=='BLOCKED'&&<section className="next-proof"><small>NEXT PROOF</small><h3>{eligibilityLabels[next]}</h3><p>Check this directly in the relevant TikTok/account screen, then record only the status and a safe reference.</p><button className="primary" onClick={()=>update(next)}><ShieldCheck/> Record verification state</button></section>}
-  {requirements.map((key,index)=>{const state=eligibility[key];return <button className={'check-row '+(key===next?'current':'')} key={key} onClick={()=>update(key)}><span className={'step-no '+(state==='VERIFIED'?'done':state==='BLOCKED'?'blocked':'')}>{state==='VERIFIED'?<Check/>:index+1}</span><div className="grow"><b>{eligibilityLabels[key]}</b><small>{state==='UNKNOWN'?'Evidence required':state==='VERIFIED'?'Evidence recorded':'Resolve blocker before launch'}</small></div><Pill tone={state==='VERIFIED'?'green':state==='BLOCKED'?'blocked':'yellow'}>{state}</Pill></button>})}
-  <section className={'eligibility '+tone}><ShieldCheck/><div><small>LAUNCH GATE</small><h2>{overall==='ELIGIBLE'?'READY FOR POLICY CHECK':overall}</h2></div></section>
-  <p className="muted">{overall==='ELIGIBLE'?'Reality prerequisites are verified. Policy, human approval and the execution kill switch still control publication.':'EXP-001 remains fail-closed. Resolve the highlighted evidence path before external execution.'}</p>
-  <p className="muted">Tap states only after checking reality. V0 stores status/reference only; identity documents, payout credentials and secrets remain outside the agent.</p>
+  <section className="setup-hero"><Settings2/><div><h2>EXP-001 launch checklist</h2><p>UI is now a projection of the evidence registry. No evidence means UNKNOWN.</p></div></section>
+  <section className="card readiness-card"><div className="readiness-top"><div><small>VERIFIED REALITY</small><h2>{verified}/{realitySubjects.length}</h2></div><Pill tone={tone}>{decision.launch.readiness}</Pill></div><div className="progress"><i style={{width:`${Math.round((verified/realitySubjects.length)*100)}%`}}/></div></section>
+  {next&&<section className="next-proof"><small>NEXT PROOF · {decision.nextProbe?.dependencyTier}</small><h3>{realityLabels[next]}</h3><p>{decision.message}</p><div className="evidence-actions"><button onClick={()=>record(next,'VERIFIED')}><Check/> Verified</button><button onClick={()=>record(next,'BLOCKED')}><X/> Blocked</button></div></section>}
+  {states.map((item,index)=><article className={'check-row '+(item.subject===next?'current':'')} key={item.subject}><span className={'step-no '+(item.state==='VERIFIED'?'done':item.state==='BLOCKED'?'blocked':'')}>{item.state==='VERIFIED'?<Check/>:index+1}</span><div className="grow"><b>{realityLabels[item.subject]}</b><small>{item.evidenceId?`Evidence: ${item.evidenceId}`:'No evidence recorded'}</small></div><Pill tone={item.state==='VERIFIED'?'green':item.state==='BLOCKED'?'blocked':'yellow'}>{item.state}</Pill></article>)}
+  <section className={'eligibility '+tone}><ShieldCheck/><div><small>ORCHESTRATOR</small><h2>{decision.action}</h2></div></section>
+  <p className="muted">{decision.message}</p>
+  <p className="muted">Only the highlighted proof can be recorded here. Evidence passes through the safe intake boundary; credentials and identity/bank documents remain outside the agent.</p>
  </main></>
 }
 export default function App(){const [page,setPage]=useState<Page>('home');let body=page==='home'?<HomePage go={setPage}/>:page==='radar'?<RadarPage go={setPage}/>:page==='opportunity'?<OpportunityPage go={setPage}/>:page==='tests'?<TestsPage/>:page==='money'?<MoneyPage/>:<SetupPage/>;return <div className="app">{body}{page!=='setup'&&page!=='opportunity'&&<Nav page={page} setPage={setPage}/>}<button className="bot" aria-label="Agent assistant"><Bot/></button></div>}
