@@ -16,11 +16,6 @@ import { parseOpportunityEvidenceDraft, type OpportunityEvidenceDraft } from './
 import { loadRealOpportunityProjection } from './domain/realOpportunityProjection';
 
 type Page = 'home'|'radar'|'opportunity'|'tests'|'money'|'setup';
-const products = [
- {id:1,name:'Viral Beauty Gadget',cat:'Beauty',price:24.99,commission:18,score:86,confidence:74,profit:31.20,trend:'+32%',emoji:'✨'},
- {id:2,name:'Smart LED Lamp',cat:'Home & Living',price:19.99,commission:15,score:81,confidence:68,profit:22.40,trend:'+18%',emoji:'💡'},
- {id:3,name:'Mini Massage Gun',cat:'Fitness',price:34.99,commission:12,score:78,confidence:71,profit:19.80,trend:'+11%',emoji:'⚡'},
-];
 
 function Header({title='TikTok Shop UK'}:{title?:string}) {
  return <header><div className="brand"><div className="logo">♪</div><div><b>{title}</b><small>🇬🇧 United Kingdom · GBP</small></div></div><div className="head-actions"><Bell size={19}/><button className="avatar">HN</button></div></header>
