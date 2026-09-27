@@ -70,14 +70,7 @@ function SetupPage(){
      evidenceId:`operator:${subject}:${Date.now()}`, subject, state, source:'OPERATOR_VERIFIED',
      observedAt:new Date().toISOString(), reference:safeReference,
    });
-   if(store){
-     const subjects=realitySubjects.map(s=>registry.resolve(s,new Date().toISOString()));
-     const persisted=subjects.filter(s=>s.evidenceId).map(s=>({
-       evidenceId:s.evidenceId!, subject:s.subject, state:s.state, source:'OPERATOR_VERIFIED' as const,
-       observedAt:new Date().toISOString(), validUntil:null, reference:s.subject===subject?safeReference:`persisted:${s.evidenceId}`, containsSensitiveData:false as const,
-     }));
-     persistRealityEvidence(store,persisted);
-   }
+   if(store) persistRealityEvidence(store,registry.allEvidence());
    setReference('');
    render(x=>x+1);
  };
