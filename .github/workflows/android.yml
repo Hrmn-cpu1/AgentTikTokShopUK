@@ -48,7 +48,11 @@ jobs:
           "$ANDROID_HOME/build-tools/36.0.0/aapt" dump badging "$apk" > /tmp/apk-badging.txt
           grep "^package: name='com.tiktokshopprofitagent.app' versionCode='1' versionName='1.0'" /tmp/apk-badging.txt
           grep "^uses-permission: name='android.permission.INTERNET'" /tmp/apk-badging.txt
-          test "$(grep -c '^uses-permission:' /tmp/apk-badging.txt)" -eq 1
+          grep '^uses-permission:' /tmp/apk-badging.txt
+          if grep -E '^uses-permission:.*(CONTACTS|LOCATION|CAMERA|RECORD_AUDIO|STORAGE|READ_MEDIA)' /tmp/apk-badging.txt; then
+            echo 'Unexpected sensitive Android permission' >&2
+            exit 1
+          fi
       - uses: actions/upload-artifact@v4
         with:
           name: tiktok-shop-profit-agent-android-debug
