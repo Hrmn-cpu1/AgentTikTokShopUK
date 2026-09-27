@@ -8,6 +8,9 @@ import { buildOnboardingStep, validateEvidenceReference } from './domain/reality
 import { ingestRealProduct, type RealProductRecord } from './domain/realProductIntake';
 import { readExecutionEnabled, writeExecutionEnabled } from './domain/realityCutoverGuard';
 import { loadRealProduct, saveRealProduct } from './domain/realProductStore';
+import { createCapitalAuthority, loadCapitalAuthority, saveCapitalAuthority } from './domain/capitalAuthority';
+import { resolveOpportunityAuthority } from './domain/opportunityAuthority';
+import { buildRealControlPlaneState } from './domain/realControlPlane';
 
 type Page = 'home'|'radar'|'opportunity'|'tests'|'money'|'setup';
 const products = [
@@ -57,12 +60,16 @@ function SetupPage(){
  const [reference,setReference]=useState('');
  const [realProduct,setRealProduct]=useState<RealProductRecord|null>(null);
  const [productDraft,setProductDraft]=useState({productId:'',listingRef:'',productName:'',sellerName:'',priceGbp:'',commissionRate:''});
+ const [capitalDraft,setCapitalDraft]=useState({availableCapital:'',capitalLimit:'',lossLimit:'',minimumAllocationScore:'',evidenceRef:''});
+ const [capitalAuthority,setCapitalAuthority]=useState(()=>typeof window!=='undefined'?loadCapitalAuthority(window.localStorage):null);
  const now=new Date().toISOString();
  const decision=orchestrateReadiness(registry,now,executionEnabled);
  const states=realitySubjects.map(subject=>registry.resolve(subject,now));
  const verified=states.filter(x=>x.state==='VERIFIED').length;
  const next=decision.nextProbe?.subject ?? null;
  const tone=decision.launch.readiness==='READY'?'green':decision.launch.readiness==='BLOCKED'?'blocked':'yellow';
+ const opportunityAuthority=resolveOpportunityAuthority(registry,now,{executionEnabled,withinCapitalLimit:true,withinLossLimit:true,humanApproved:false,claimsValid:true});
+ const controlPlane=buildRealControlPlaneState(opportunityAuthority,capitalAuthority);
 
  const record=(subject:RealitySubject,state:'VERIFIED'|'BLOCKED'|'UNKNOWN')=>{
    const safeReference=validateEvidenceReference(reference);
@@ -73,6 +80,12 @@ function SetupPage(){
    if(store) persistRealityEvidence(store,registry.allEvidence());
    setReference('');
    render(x=>x+1);
+ };
+
+ const approveCapital=()=>{
+  const authority=createCapitalAuthority({limits:{availableCapital:Number(capitalDraft.availableCapital),capitalLimit:Number(capitalDraft.capitalLimit),lossLimit:Number(capitalDraft.lossLimit),minimumAllocationScore:Number(capitalDraft.minimumAllocationScore)},approvedAt:new Date().toISOString(),evidenceRef:validateEvidenceReference(capitalDraft.evidenceRef)});
+  if(typeof window!=='undefined')saveCapitalAuthority(window.localStorage,authority);
+  setCapitalAuthority(authority);
  };
 
  const captureProduct=()=>{
@@ -89,6 +102,8 @@ function SetupPage(){
  return <><Header title="UK Reality Check"/><main>
   <section className="setup-hero"><Settings2/><div><h2>EXP-001 launch checklist</h2><p>UI is now a projection of the evidence registry. No evidence means UNKNOWN.</p></div></section>
   <section className="card"><div className="money-line"><span>Execution readiness switch</span><button onClick={()=>{const next=!executionEnabled;if(typeof window!=='undefined')writeExecutionEnabled(window.localStorage,next);setExecutionEnabled(next)}}>{executionEnabled?'ENABLED':'SAFE MODE'}</button></div><p className="muted">Defaults OFF. Enabling only permits readiness evaluation; publishing and other external effects still require policy and human approval.</p></section>
+  <section className="card"><h3>💷 Capital authority</h3><p className="muted">These limits come from the operator, never from the ranking algorithm.</p><div className="product-fields"><input inputMode="decimal" placeholder="Available capital £" value={capitalDraft.availableCapital} onChange={e=>setCapitalDraft({...capitalDraft,availableCapital:e.target.value})}/><input inputMode="decimal" placeholder="Per-experiment capital limit £" value={capitalDraft.capitalLimit} onChange={e=>setCapitalDraft({...capitalDraft,capitalLimit:e.target.value})}/><input inputMode="decimal" placeholder="Loss limit £" value={capitalDraft.lossLimit} onChange={e=>setCapitalDraft({...capitalDraft,lossLimit:e.target.value})}/><input inputMode="decimal" placeholder="Minimum allocation score 0–100" value={capitalDraft.minimumAllocationScore} onChange={e=>setCapitalDraft({...capitalDraft,minimumAllocationScore:e.target.value})}/><input placeholder="Authority evidence reference" value={capitalDraft.evidenceRef} onChange={e=>setCapitalDraft({...capitalDraft,evidenceRef:e.target.value})}/></div><button className="primary" disabled={capitalDraft.evidenceRef.trim().length<6} onClick={approveCapital}>Approve capital limits</button>{capitalAuthority&&<p className="captured">Authority active · available £{capitalAuthority.limits.availableCapital.toFixed(2)} · experiment £{capitalAuthority.limits.capitalLimit.toFixed(2)} · loss £{capitalAuthority.limits.lossLimit.toFixed(2)}</p>}</section>
+  <section className="card"><h3>🛡️ Real control plane</h3><div className="money-line"><span>Market eligibility</span><b>{controlPlane.marketEligible?'VERIFIED':'NOT READY'}</b></div><div className="money-line"><span>Account risk</span><b>{controlPlane.accountRiskAcceptable?'VERIFIED':'NOT READY'}</b></div><div className="money-line"><span>Capital authority</span><b>{controlPlane.capitalReady?'VERIFIED':'MISSING'}</b></div><div className="money-line"><span>Opportunity evaluation</span><b>{controlPlane.readyForOpportunityEvaluation?'AUTHORIZED':'BLOCKED'}</b></div>{controlPlane.blockers.length>0&&<p className="muted">{controlPlane.blockers.join(' · ')}</p>}</section>
   <section className="card readiness-card"><div className="readiness-top"><div><small>VERIFIED REALITY</small><h2>{verified}/{realitySubjects.length}</h2></div><Pill tone={tone}>{decision.launch.readiness}</Pill></div><div className="progress"><i style={{width:`${Math.round((verified/realitySubjects.length)*100)}%`}}/></div></section>
   {next==='REAL_PRODUCT'&&<section className="next-proof product-intake"><small>REAL PRODUCT · UK</small><h3>Capture one real affiliate listing</h3><p>Enter only facts observed on the current TikTok listing. Registration does not make it a winner.</p><div className="product-fields"><input placeholder="Product/listing ID" value={productDraft.productId} onChange={e=>setProductDraft({...productDraft,productId:e.target.value})}/><input placeholder="Listing reference / URL" value={productDraft.listingRef} onChange={e=>setProductDraft({...productDraft,listingRef:e.target.value})}/><input placeholder="Product name" value={productDraft.productName} onChange={e=>setProductDraft({...productDraft,productName:e.target.value})}/><input placeholder="Seller name" value={productDraft.sellerName} onChange={e=>setProductDraft({...productDraft,sellerName:e.target.value})}/><input inputMode="decimal" placeholder="Price GBP" value={productDraft.priceGbp} onChange={e=>setProductDraft({...productDraft,priceGbp:e.target.value})}/><input inputMode="decimal" placeholder="Commission %" value={productDraft.commissionRate} onChange={e=>setProductDraft({...productDraft,commissionRate:e.target.value})}/></div><button className="primary" onClick={captureProduct}>Capture product evidence</button>{realProduct&&<p className="captured">Captured: {realProduct.productName} · £{realProduct.priceGbp} · {(realProduct.commissionRate*100).toFixed(1)}%</p>}</section>}
   {next&&next!=='REAL_PRODUCT'&&decision.nextProbe&&(()=>{const step=buildOnboardingStep(decision.nextProbe);return <section className="next-proof"><small>NEXT PROOF · TIER {decision.nextProbe.dependencyTier}</small><h3>{step.title}</h3><p>{step.instruction}</p><label className="evidence-field"><span>Evidence reference</span><input value={reference} onChange={e=>setReference(e.target.value)} placeholder={step.referenceHint}/><small>Record where you observed the status. Never paste passwords, tokens, identity document numbers or bank details.</small></label><div className="evidence-actions"><button disabled={reference.trim().length<6} onClick={()=>record(next,'VERIFIED')}><Check/> Verified</button><button disabled={reference.trim().length<6} onClick={()=>record(next,'BLOCKED')}><X/> Blocked</button></div></section>})()}
