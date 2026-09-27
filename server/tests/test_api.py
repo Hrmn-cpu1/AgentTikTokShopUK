@@ -95,6 +95,9 @@ def test_restart_exact_retry_conflict_and_refund_revocation(database):
     assert after["realized_contribution_gbp"] == "0.98"
     assert after["local_first_pound_candidate"] is False
     assert after["commercial_proof"] == "NOT_PROVEN"
+    projected = recovered.get("/v1/portfolio").json()
+    assert projected["experiments"][0]["realizedContributionGbp"] == "0.98"
+    assert projected["experiments"][0]["firstPoundCandidate"] is False
 
 
 def test_later_cost_revokes_pound_without_overwriting_initial_receipt(database):
@@ -128,3 +131,37 @@ def test_money_and_cross_experiment_guards(database):
 def test_configuration_requires_server_side_secret(database):
     with pytest.raises(RuntimeError):
         create_app(database, "short")
+
+
+def test_operator_browser_session_reads_server_truth_and_requires_csrf_for_writes(database):
+    c=TestClient(create_app(database,TOKEN,operator_login_secret="operator-test-secret-longer-than-32-characters"),
+        base_url="https://agent.example")
+    assert c.get("/v1/portfolio").status_code==401
+    assert c.post("/v1/operator/login",json={"access_key":"operator-test-secret-longer-than-32-characters"}).status_code==200
+    assert c.get("/v1/portfolio").json()["experiments"]==[]
+    assert c.post("/v1/experiments",json=experiment()).status_code==403
+    csrf=c.cookies.get("operator_csrf")
+    assert c.post("/v1/experiments",json=experiment(),headers={"X-CSRF-Token":csrf}).status_code==200
+    recovered=TestClient(create_app(database,TOKEN,operator_login_secret="operator-test-secret-longer-than-32-characters"),
+        base_url="https://agent.example")
+    recovered.cookies.update(c.cookies)
+    assert recovered.get("/v1/portfolio").json()["experiments"][0]["experimentId"]=="EXP-001"
+
+
+def test_settlement_five_cost_three_refund_two_revokes_first_pound_after_restart(database):
+    c=client(database)
+    assert c.post("/v1/experiments",json=experiment()).status_code==200
+    for kind,external,amount in [("PUBLISHED","video-one",None),("ORDER_CREATED","order-one",None),
+        ("DELIVERED","delivery-one",None),("COMMISSION_SETTLED","settlement-one","5.00")]:
+        assert c.post("/v1/events",json=event(kind,external,amount)).status_code==200
+    assert c.post("/v1/costs",json={"experiment_id":"EXP-001","amount_gbp":"3.00",
+        "evidence_ref":"receipt:cost:three"}).status_code==200
+    assert c.get("/v1/portfolio").json()["experiments"][0]["realizedContributionGbp"]=="2.00"
+    assert c.get("/v1/portfolio").json()["experiments"][0]["firstPoundCandidate"] is True
+    assert c.post("/v1/events",json=event("REFUNDED","refund-one","2.00")).status_code==200
+    restarted=client(database)
+    assert restarted.get("/v1/portfolio").json()["experiments"][0]["realizedContributionGbp"]=="0.00"
+    assert restarted.get("/v1/portfolio").json()["experiments"][0]["firstPoundCandidate"] is False
+    assert restarted.get("/v1/experiments/EXP-001/economics").json()["commercial_proof"]=="NOT_PROVEN"
+    assert restarted.post("/v1/events",json=event("REFUNDED","refund-two","4.00")).status_code==200
+    assert restarted.get("/v1/portfolio").json()["experiments"][0]["realizedContributionGbp"]=="-4.00"

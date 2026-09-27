@@ -6,7 +6,7 @@ from decimal import Decimal
 from typing import Literal
 from uuid import uuid4
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
@@ -69,13 +69,17 @@ def create_app(database_url: str | None = None, operator_token: str | None = Non
         raise RuntimeError("DATABASE_URL and a strong OPERATOR_API_TOKEN are required")
     engine = create_engine(url, pool_pre_ping=True)
     app = FastAPI(title="TikTok Shop UK Observation API")
-    add_connection_routes(app, engine, tiktok_provider, login_secret=operator_login_secret,
+    session_operator = add_connection_routes(app, engine, tiktok_provider, login_secret=operator_login_secret,
                           encryption_key=token_encryption_key)
     security = HTTPBearer(auto_error=False)
 
-    def require_operator(credentials: HTTPAuthorizationCredentials | None = Depends(security)) -> None:
-        if credentials is None or not hmac.compare_digest(credentials.credentials, token):
-            raise HTTPException(status_code=401, detail="Operator authentication required")
+    def require_operator(request: Request, credentials: HTTPAuthorizationCredentials | None = Depends(security)) -> None:
+        if credentials is not None:
+            if not hmac.compare_digest(credentials.credentials, token):
+                raise HTTPException(status_code=401, detail="Operator authentication required")
+            return
+        with Session(engine) as session:
+            session_operator(request, session, csrf=request.method not in {"GET", "HEAD"})
 
     def require_manual_authority(_operator: None = Depends(require_operator)) -> None:
         with Session(engine) as session:
@@ -167,22 +171,46 @@ def create_app(database_url: str | None = None, operator_token: str | None = Non
         with Session(engine) as session:
             if session.get(Experiment, experiment_id) is None:
                 raise HTTPException(status_code=404, detail="Unknown experiment")
-            events = session.scalars(select(CommerceEvent).where(CommerceEvent.experiment_id == experiment_id)).all()
-            cost = session.get(ExperimentCost, experiment_id)
-            adjustments = session.scalars(select(ExperimentCostAdjustment).where(
-                ExperimentCostAdjustment.experiment_id == experiment_id)).all()
-            types = {event.event_type for event in events}
-            mature = {"PUBLISHED", "ORDER_CREATED", "DELIVERED", "COMMISSION_SETTLED"}.issubset(types)
-            settled = sum((event.amount_gbp for event in events if event.event_type == "COMMISSION_SETTLED"), Decimal("0"))
-            refunds = sum((event.amount_gbp for event in events if event.event_type == "REFUNDED"), Decimal("0"))
-            net = max(Decimal("0"), settled - refunds) if "COMMISSION_SETTLED" in types else None
-            observed_cost = cost.amount_gbp + sum((entry.amount_gbp for entry in adjustments), Decimal("0")) if cost else None
-            contribution = net - observed_cost if net is not None and observed_cost is not None else None
+            net, observed_cost, contribution, candidate, _ = economic_projection(session, experiment_id)
             return {"experiment_id": experiment_id, "net_settled_gbp": str(net) if net is not None else None,
                     "observed_cost_gbp": str(observed_cost) if observed_cost is not None else None,
                     "realized_contribution_gbp": str(contribution) if contribution is not None else None,
-                    "local_first_pound_candidate": bool(mature and contribution is not None and contribution >= Decimal("1.00")),
+                    "local_first_pound_candidate": candidate,
                     "commercial_proof": "NOT_PROVEN", "observation_source": "MANUAL_ASSERTION"}
+
+    def economic_projection(session: Session, experiment_id: str):
+        events = session.scalars(select(CommerceEvent).where(CommerceEvent.experiment_id == experiment_id)).all()
+        cost = session.get(ExperimentCost, experiment_id)
+        adjustments = session.scalars(select(ExperimentCostAdjustment).where(
+            ExperimentCostAdjustment.experiment_id == experiment_id)).all()
+        types = {event.event_type for event in events}
+        settled = sum((event.amount_gbp for event in events if event.event_type == "COMMISSION_SETTLED"), Decimal("0"))
+        refunds = sum((event.amount_gbp for event in events if event.event_type == "REFUNDED"), Decimal("0"))
+        net = settled - refunds if "COMMISSION_SETTLED" in types else None
+        observed_cost = cost.amount_gbp + sum((entry.amount_gbp for entry in adjustments), Decimal("0")) if cost else None
+        contribution = net - observed_cost if net is not None and observed_cost is not None else None
+        mature = {"PUBLISHED", "ORDER_CREATED", "DELIVERED", "COMMISSION_SETTLED"}.issubset(types)
+        candidate = bool(mature and contribution is not None and contribution >= Decimal("1.00"))
+        return net, observed_cost, contribution, candidate, "PUBLISHED" in types
+
+    @app.get("/v1/portfolio", dependencies=[Depends(require_operator)])
+    def portfolio():
+        """One durable, read-only projection for Home and Money; no browser assertions."""
+        with Session(engine) as session:
+            experiments = session.scalars(select(Experiment).order_by(Experiment.created_at)).all()
+            results = []
+            for experiment in experiments:
+                net, observed_cost, contribution, candidate, published = economic_projection(session, experiment.experiment_id)
+                results.append({"experimentId": experiment.experiment_id, "decisionId": experiment.decision_id,
+                    "productId": experiment.product_id, "creativeId": experiment.creative_id,
+                    "publicationObserved": published,
+                    "netSettledGbp": str(net) if net is not None else None,
+                    "observedCostGbp": str(observed_cost) if observed_cost is not None else None,
+                    "realizedContributionGbp": str(contribution) if contribution is not None else None,
+                    "firstPoundCandidate": candidate,
+                    "commercialProof": "NOT_PROVEN", "source": "MANUAL_ASSERTION"})
+            return {"experiments": results, "commercialProof": "NOT_PROVEN",
+                "authority": "SERVER_OBSERVATIONS_ONLY"}
 
     @app.post("/v1/cost-adjustments", dependencies=[Depends(require_manual_authority)])
     def add_cost(item: CostAdjustmentInput):

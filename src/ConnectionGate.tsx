@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Capacitor } from '@capacitor/core';
 import { App as NativeApp } from '@capacitor/app';
 import { Browser } from '@capacitor/browser';
+import { apiJson as json, operatorCsrf } from './apiClient';
 
 type Capability = 'AVAILABLE' | 'REQUIRES_APPROVAL' | 'BLOCKED' | 'UNKNOWN';
 type Connection = { connectionId:string; providerUserId:string; displayName:string|null;
@@ -13,13 +14,6 @@ type State = { connection:Connection|null; capabilities:Record<string,Capability
 const labels:Record<string,string> = {IDENTITY:'Identity',TIKTOK_SHOP:'Shop',AFFILIATE:'Affiliate',
   PRODUCT_DISCOVERY:'Products',CONTENT_PUBLISHING:'Publishing',ORDER_READ:'Orders',
   COMMISSION_READ:'Commission',SETTLEMENT_READ:'Settlement'};
-
-async function json<T>(path:string, init?:RequestInit):Promise<T> {
-  const response = await fetch(path, {credentials:'same-origin',...init});
-  if (!response.ok) throw new Error(response.status===401?'Operator session expired':
-    response.status===503?'Server configuration required':`Connection check failed (${response.status})`);
-  return response.json() as Promise<T>;
-}
 
 export default function ConnectionGate({children}:{children:React.ReactNode}) {
   const native=Capacitor.isNativePlatform();
@@ -92,7 +86,7 @@ export default function ConnectionGate({children}:{children:React.ReactNode}) {
     if (!window.confirm('Disconnect TikTok? Historical experiments and money records will remain.')) return;
     setMessage('');
     try {
-      const csrf = decodeURIComponent(document.cookie.split('; ').find(value=>value.startsWith('operator_csrf='))?.split('=')[1]??'');
+      const csrf = operatorCsrf();
       await json('/v1/tiktok/disconnect',{method:'POST',headers:{'X-CSRF-Token':csrf}});
     } catch (error) {setMessage(error instanceof Error?error.message:'Disconnect needs reconciliation');}
     setLimitedOpen(false);await refresh();
@@ -100,7 +94,7 @@ export default function ConnectionGate({children}:{children:React.ReactNode}) {
   const verifyManually = async (event:React.FormEvent) => {
     event.preventDefault();setMessage('');
     try {
-      const csrf = decodeURIComponent(document.cookie.split('; ').find(value=>value.startsWith('operator_csrf='))?.split('=')[1]??'');
+      const csrf = operatorCsrf();
       setConnection(await json<State>('/v1/tiktok/manual-verification',{method:'POST',
         headers:{'Content-Type':'application/json','X-CSRF-Token':csrf},
         body:JSON.stringify({uk_market_evidence_ref:ukReference,affiliate_evidence_ref:affiliateReference})}));

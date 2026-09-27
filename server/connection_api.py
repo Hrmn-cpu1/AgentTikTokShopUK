@@ -291,3 +291,4 @@ def add_connection_routes(app, engine, provider=None, *, login_secret=None, encr
             return public_state(record)
 
     app.include_router(router)
+    return operator
