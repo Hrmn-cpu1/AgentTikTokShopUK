@@ -1,3 +1,4 @@
+import { MemoryBusinessTruthStore } from './businessTruthStore';
 import { describe, expect, it } from 'vitest';
 import { RealResultIngestor, type RealResultInput } from './realResultIngestor';
 
@@ -47,5 +48,15 @@ describe('real result ingestor', () => {
     ingestor.ingest(base);
     ingestor.ingest({ ...base, externalEventId: 'settle-x', experimentId: 'EXP-999', type: 'COMMISSION_SETTLED', amountGbp: 99, evidenceRef: 'creator-center:earnings:settle-x' });
     expect(ingestor.rewardForExperiment('EXP-001').economicTruthKnown).toBe(false);
+  });
+
+  it('recovers settled economic truth after ingestor reconstruction',()=>{
+    const store=new MemoryBusinessTruthStore();
+    const first=new RealResultIngestor(store);
+    const input={source:'TIKTOK_CREATOR_CENTER' as const,externalEventId:'settle-restart-1',experimentId:'EXP-RECOVER',actionId:null,type:'COMMISSION_SETTLED' as const,occurredAt:'2026-09-27T12:00:00Z',amountGbp:4.25,evidenceRef:'creator-center:settlement:1'};
+    expect(first.ingest(input).duplicate).toBe(false);
+    const recovered=new RealResultIngestor(store);
+    expect(recovered.rewardForExperiment('EXP-RECOVER').settledCommissionGbp).toBe(4.25);
+    expect(recovered.ingest(input).duplicate).toBe(true);
   });
 });
