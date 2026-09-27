@@ -1,12 +1,14 @@
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, inspect
+from sqlalchemy.orm import Session
 
 from server.api import create_app
+from server.models import TikTokConnection
 
 TOKEN = "ci-only-operator-token-longer-than-32-characters"
 
@@ -16,6 +18,16 @@ def test_live_postgres_constraints_restart_and_decimal():
     url = os.environ["DATABASE_URL"]
     engine = create_engine(url)
     assert "commerce_events" in inspect(engine).get_table_names()
+    current = datetime.now(timezone.utc)
+    with Session(engine) as session:
+        record = session.get(TikTokConnection, "ci-account")
+        if record is None:
+            session.add(TikTokConnection(connection_id="ci-account",operator_id="primary",
+                provider_user_id="CI-FAKE-NO-REAL-ACCOUNT",granted_scopes="user.info.basic",status="ACTIVE",
+                connected_at=current,last_validated_at=current,access_expires_at=current+timedelta(days=1),
+                refresh_expires_at=current+timedelta(days=365),manual_verified_at=current,
+                manual_uk_evidence_ref="ci:market:uk",manual_affiliate_evidence_ref="ci:affiliate:status"))
+            session.commit()
     suffix = uuid4().hex[:12]
     eid = f"EXP-PG-{suffix}"
     payload = {"experiment_id": eid, "decision_id": f"DEC-{suffix}", "product_id": "p1", "creative_id": "c1",

@@ -62,3 +62,38 @@ class ExperimentCostAdjustment(Base):
     evidence_ref: Mapped[str] = mapped_column(String(500), nullable=False)
     observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     __table_args__ = (CheckConstraint("amount_gbp > 0", name="positive_adjustment"),)
+
+
+class OperatorSession(Base):
+    __tablename__ = "operator_sessions"
+    session_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    csrf_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class TikTokOAuthIntent(Base):
+    __tablename__ = "tiktok_oauth_intents"
+    state_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    session_hash: Mapped[str] = mapped_column(ForeignKey("operator_sessions.session_hash"), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class TikTokConnection(Base):
+    __tablename__ = "tiktok_connections"
+    connection_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    operator_id: Mapped[str] = mapped_column(String(50), nullable=False, unique=True)
+    provider_user_id: Mapped[str] = mapped_column(String(200), nullable=False)
+    display_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    granted_scopes: Mapped[str] = mapped_column(String(1000), nullable=False)
+    encrypted_access_token: Mapped[str | None] = mapped_column(String(4000), nullable=True)
+    encrypted_refresh_token: Mapped[str | None] = mapped_column(String(4000), nullable=True)
+    access_expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    refresh_expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    connected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    last_validated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    status: Mapped[str] = mapped_column(String(30), nullable=False)
+    manual_uk_evidence_ref: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    manual_affiliate_evidence_ref: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    manual_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    __table_args__ = (CheckConstraint("status IN ('ACTIVE','EXPIRED','REVOKED','REFRESH_FAILED','UNKNOWN')", name="valid_connection_status"),)

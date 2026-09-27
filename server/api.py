@@ -1,7 +1,7 @@
 """One-operator, manual observation API. It never publishes or spends externally."""
 import hmac
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Literal
 from uuid import uuid4
@@ -13,7 +13,8 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from .models import CommerceEvent, Experiment, ExperimentCost, ExperimentCostAdjustment
+from .models import CommerceEvent, Experiment, ExperimentCost, ExperimentCostAdjustment, TikTokConnection
+from .connection_api import add_connection_routes, utc
 
 
 Money = Decimal
@@ -59,24 +60,37 @@ class CostAdjustmentInput(CostInput):
     amount_gbp: Money = Field(gt=0, max_digits=18, decimal_places=2)
 
 
-def create_app(database_url: str | None = None, operator_token: str | None = None) -> FastAPI:
+def create_app(database_url: str | None = None, operator_token: str | None = None,
+               *, tiktok_provider=None, operator_login_secret=None, token_encryption_key=None) -> FastAPI:
     url = database_url or os.environ.get("DATABASE_URL")
     token = operator_token or os.environ.get("OPERATOR_API_TOKEN")
     if not url or not token or len(token) < 32:
         raise RuntimeError("DATABASE_URL and a strong OPERATOR_API_TOKEN are required")
     engine = create_engine(url, pool_pre_ping=True)
     app = FastAPI(title="TikTok Shop UK Observation API")
+    add_connection_routes(app, engine, tiktok_provider, login_secret=operator_login_secret,
+                          encryption_key=token_encryption_key)
     security = HTTPBearer(auto_error=False)
 
     def require_operator(credentials: HTTPAuthorizationCredentials | None = Depends(security)) -> None:
         if credentials is None or not hmac.compare_digest(credentials.credentials, token):
             raise HTTPException(status_code=401, detail="Operator authentication required")
 
+    def require_manual_authority(_operator: None = Depends(require_operator)) -> None:
+        with Session(engine) as session:
+            connected = session.scalar(select(TikTokConnection).where(TikTokConnection.operator_id == "primary"))
+            if connected is None or connected.status != "ACTIVE" or not connected.manual_verified_at or \
+               not connected.manual_uk_evidence_ref or not connected.manual_affiliate_evidence_ref or \
+               utc(connected.manual_verified_at) + timedelta(days=30) <= datetime.now(timezone.utc) or \
+               utc(connected.last_validated_at) + timedelta(minutes=15) <= datetime.now(timezone.utc) or \
+               utc(connected.access_expires_at) <= datetime.now(timezone.utc):
+                raise HTTPException(status_code=403, detail="Active TikTok identity and current manual authority required")
+
     @app.get("/health")
     def health():
         return {"status": "up"}
 
-    @app.post("/v1/experiments", dependencies=[Depends(require_operator)])
+    @app.post("/v1/experiments", dependencies=[Depends(require_manual_authority)])
     def record_experiment(item: ExperimentInput):
         with Session(engine) as session:
             existing = session.get(Experiment, item.experiment_id)
@@ -93,7 +107,7 @@ def create_app(database_url: str | None = None, operator_token: str | None = Non
                 raise HTTPException(status_code=409, detail="Conflicting experiment or action identity") from None
         return {"experiment_id": item.experiment_id, "duplicate": False, "state": "MANUAL_ASSERTION"}
 
-    @app.post("/v1/events", dependencies=[Depends(require_operator)])
+    @app.post("/v1/events", dependencies=[Depends(require_manual_authority)])
     def record_event(item: EventInput):
         if item.event_type in {"COMMISSION_SETTLED", "REFUNDED"} and item.amount_gbp is None:
             raise HTTPException(status_code=422, detail="Observed economic amount required")
@@ -129,7 +143,7 @@ def create_app(database_url: str | None = None, operator_token: str | None = Non
                 raise HTTPException(status_code=409, detail="Concurrent external event identity conflict; read before retry") from None
             return {"event_id": event.event_id, "duplicate": False, "state": "MANUAL_ASSERTION"}
 
-    @app.post("/v1/costs", dependencies=[Depends(require_operator)])
+    @app.post("/v1/costs", dependencies=[Depends(require_manual_authority)])
     def record_cost(item: CostInput):
         with Session(engine) as session:
             if session.get(Experiment, item.experiment_id) is None:
@@ -169,7 +183,7 @@ def create_app(database_url: str | None = None, operator_token: str | None = Non
                     "local_first_pound_candidate": bool(mature and contribution is not None and contribution >= Decimal("1.00")),
                     "commercial_proof": "NOT_PROVEN", "observation_source": "MANUAL_ASSERTION"}
 
-    @app.post("/v1/cost-adjustments", dependencies=[Depends(require_operator)])
+    @app.post("/v1/cost-adjustments", dependencies=[Depends(require_manual_authority)])
     def add_cost(item: CostAdjustmentInput):
         with Session(engine) as session:
             if session.get(ExperimentCost, item.experiment_id) is None:

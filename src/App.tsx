@@ -31,6 +31,7 @@ import { loadExperimentCost, saveExperimentCost } from './domain/experimentCostT
 import { resolveReward } from './domain/rewardResolver';
 import { deriveFirstPoundFromBusinessTruth } from './domain/firstPoundBusinessTruth';
 import { deriveManualLaunchChecks } from './domain/manualLaunchChecks';
+import ConnectionGate from './ConnectionGate';
 
 type Page = 'home'|'radar'|'opportunity'|'tests'|'money'|'setup';
 
@@ -197,4 +198,4 @@ class FailClosedBoundary extends Component<{children:React.ReactNode},{failed:bo
  render(){return this.state.failed?<div className="app"><Header title="Business truth blocked"/><main><section className="card"><h2>Stored evidence cannot be verified</h2><p>A local record is invalid or unavailable. Actions and profit claims are blocked. Preserve the records and reconcile them with the original evidence before continuing.</p></section></main></div>:this.props.children}
 }
 function OperatorApp(){const [page,setPage]=useState<Page>('home');let body=page==='home'?<HomePage go={setPage}/>:page==='radar'?<RadarPage go={setPage}/>:page==='opportunity'?<OpportunityPage go={setPage}/>:page==='tests'?<TestsPage/>:page==='money'?<MoneyPage/>:<SetupPage/>;return <div className="app">{body}{page!=='setup'&&page!=='opportunity'&&<Nav page={page} setPage={setPage}/>}<button className="bot" aria-label="Agent assistant"><Bot/></button></div>}
-export default function App(){return <FailClosedBoundary><OperatorApp/></FailClosedBoundary>}
+export default function App(){return <FailClosedBoundary><ConnectionGate><OperatorApp/></ConnectionGate></FailClosedBoundary>}

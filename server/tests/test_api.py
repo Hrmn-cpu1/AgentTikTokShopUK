@@ -1,13 +1,15 @@
 from pathlib import Path
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from alembic import command
 from alembic.config import Config
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, inspect
+from sqlalchemy.orm import Session
 
 from server.api import create_app
-from server.models import Base
+from server.models import Base, TikTokConnection
 
 
 TOKEN = "test-only-operator-secret-32-characters-long"
@@ -20,6 +22,15 @@ def database(tmp_path, monkeypatch):
     monkeypatch.setenv("DATABASE_URL", url)
     cfg = Config(str(ROOT / "alembic.ini"))
     command.upgrade(cfg, "head")
+    current = datetime.now(timezone.utc)
+    # Fake account evidence is isolated to this engineering test database.
+    with Session(create_engine(url)) as session:
+        session.add(TikTokConnection(connection_id="fixture-connection", operator_id="primary",
+            provider_user_id="fixture-tiktok-user", granted_scopes="user.info.basic", status="ACTIVE",
+            connected_at=current, last_validated_at=current, access_expires_at=current+timedelta(days=1),
+            refresh_expires_at=current+timedelta(days=365), manual_verified_at=current,
+            manual_uk_evidence_ref="test:market:uk", manual_affiliate_evidence_ref="test:affiliate:status"))
+        session.commit()
     yield url
 
 
