@@ -3,6 +3,7 @@ import { Bell, Bot, Check, ChevronRight, CircleDollarSign, FlaskConical, Home, R
 import { RealityEvidenceRegistry, type RealitySubject } from './domain/realityEvidenceRegistry';
 import { ingestOperatorEvidence } from './domain/operatorEvidenceIntake';
 import { orchestrateReadiness } from './domain/realityReadinessOrchestrator';
+import { BrowserRealityEvidenceStore, hydrateRealityRegistry, persistRealityEvidence } from './domain/realityPersistence';
 
 type Page = 'home'|'radar'|'opportunity'|'tests'|'money'|'setup';
 const products = [
@@ -45,7 +46,8 @@ const realityLabels: Record<RealitySubject,string> = {
 const realitySubjects=Object.keys(realityLabels) as RealitySubject[];
 
 function SetupPage(){
- const [registry]=useState(()=>new RealityEvidenceRegistry());
+ const [store]=useState(()=>typeof window!=='undefined'?new BrowserRealityEvidenceStore(window.localStorage):null);
+ const [registry]=useState(()=>store?hydrateRealityRegistry(store):new RealityEvidenceRegistry());
  const [,render]=useState(0);
  const now=new Date().toISOString();
  const decision=orchestrateReadiness(registry,now,true);
@@ -59,6 +61,14 @@ function SetupPage(){
      evidenceId:`operator:${subject}:${Date.now()}`, subject, state, source:'OPERATOR_VERIFIED',
      observedAt:new Date().toISOString(), reference:`operator-check:${subject.toLowerCase()}`,
    });
+   if(store){
+     const subjects=realitySubjects.map(s=>registry.resolve(s,new Date().toISOString()));
+     const persisted=subjects.filter(s=>s.evidenceId).map(s=>({
+       evidenceId:s.evidenceId!, subject:s.subject, state:s.state, source:'OPERATOR_VERIFIED' as const,
+       observedAt:new Date().toISOString(), validUntil:null, reference:`operator-check:${s.subject.toLowerCase()}`, containsSensitiveData:false as const,
+     }));
+     persistRealityEvidence(store,persisted);
+   }
    render(x=>x+1);
  };
 
