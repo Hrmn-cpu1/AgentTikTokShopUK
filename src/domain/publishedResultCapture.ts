@@ -1,4 +1,5 @@
 import { RealResultIngestor, type RealResultInput, type RealResultReceipt } from './realResultIngestor';
+import type { BusinessTruthStore } from './businessTruthStore';
 
 export type PublishedLaunch = {
  packetId:string; experimentId:string; creativeId:string; externalPublicationId:string; publishedAt:string; evidenceRef:string;
@@ -14,8 +15,12 @@ export function bindRealPublication(packet:{
 }
 
 export class PublishedResultCapture {
- private readonly ingestor=new RealResultIngestor();
- constructor(private readonly publication:PublishedLaunch){}
+ private readonly ingestor:RealResultIngestor;
+ readonly publicationReceipt:RealResultReceipt;
+ constructor(private readonly publication:PublishedLaunch,store?:BusinessTruthStore){
+   this.ingestor=new RealResultIngestor(store);
+   this.publicationReceipt=this.ingestor.ingest({source:'MANUAL_VERIFIED',externalEventId:publication.externalPublicationId,experimentId:publication.experimentId,actionId:publication.packetId,type:'PUBLISHED',occurredAt:publication.publishedAt,amountGbp:null,evidenceRef:publication.evidenceRef});
+ }
  capture(input:Omit<RealResultInput,'experimentId'|'actionId'>):RealResultReceipt {
    return this.ingestor.ingest({...input,experimentId:this.publication.experimentId,actionId:this.publication.packetId});
  }
