@@ -12,6 +12,8 @@ config = context.config
 url = os.environ.get("DATABASE_URL")
 if not url:
     raise RuntimeError("DATABASE_URL is required for migrations")
+if url.startswith('postgresql://'):
+    url = 'postgresql+psycopg://' + url[len('postgresql://'):]
 config.set_main_option("sqlalchemy.url", url.replace("%", "%%"))
 
 if context.is_offline_mode():

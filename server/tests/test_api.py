@@ -31,6 +31,16 @@ def database(tmp_path, monkeypatch):
             refresh_expires_at=current+timedelta(days=365), manual_verified_at=current,
             manual_uk_evidence_ref="test:market:uk", manual_affiliate_evidence_ref="test:affiliate:status"))
         session.commit()
+    operator = TestClient(create_app(url, TOKEN), headers={"Authorization": f"Bearer {TOKEN}"})
+    observed = datetime.now(timezone.utc).isoformat()
+    assert operator.post('/v1/capital-authority', json={"authority_id":"capital-001","available_capital_gbp":"10.00",
+        "capital_limit_gbp":"8.00","loss_limit_gbp":"5.00","minimum_allocation_score":60,
+        "evidence_ref":"fixture:capital:receipt"}).status_code == 200
+    assert operator.post('/v1/products', json={"product_id":"product-1","listing_ref":"fixture:listing:1",
+        "evidence_ref":"fixture:product:1","observed_at":observed}).status_code == 200
+    assert operator.post('/v1/opportunities', json={"opportunity_id":"opportunity-1","product_id":"product-1",
+        "capital_required_gbp":"3.00","maximum_loss_gbp":"2.00","allocation_score":70,
+        "evidence_ref":"fixture:opportunity:1","observed_at":observed}).status_code == 200
     yield url
 
 
@@ -41,14 +51,25 @@ def client(url):
 def experiment(experiment_id="EXP-001"):
     return {"experiment_id": experiment_id, "decision_id": "DEC-001", "product_id": "product-1",
             "creative_id": "creative-1", "publication_action_id": f"publish-{experiment_id}",
-            "authority_evidence_ref": "operator:approved:1", "market": "UK", "currency": "GBP"}
+            "authority_evidence_ref": "operator:approved:1", "opportunity_id":"opportunity-1", "market": "UK", "currency": "GBP"}
 
 
-def event(event_type, external_event_id, amount=None, experiment_id="EXP-001"):
+def event(event_type, external_event_id, amount=None, experiment_id="EXP-001", parent=None):
     return {"experiment_id": experiment_id, "action_id": f"publish-{experiment_id}",
             "source": "MANUAL_VERIFIED", "external_event_id": external_event_id,
-            "event_type": event_type, "amount_gbp": amount, "evidence_ref": f"receipt:{external_event_id}",
+            "parent_external_event_id":parent,"event_type": event_type, "amount_gbp": amount, "evidence_ref": f"receipt:{external_event_id}",
             "occurred_at": "2026-09-27T10:00:00Z"}
+
+
+def launch(c):
+    assert c.post('/v1/product-claims',json={"claim_id":"claim-1","product_id":"product-1",
+        "text":"Observed product claim", "state":"SUPPORTED", "evidence_ref":"receipt:claim:1"}).status_code == 200
+    assert c.post('/v1/creatives',json={"creative_id":"creative-1","experiment_id":"EXP-001",
+        "content":"Operator reviewed creative", "claim_ids":["claim-1"], "evidence_ref":"receipt:creative:1"}).status_code == 200
+    assert c.post('/v1/creative-approvals',json={"approval_id":"approve-1","experiment_id":"EXP-001",
+        "creative_id":"creative-1","evidence_ref":"operator:approval:1"}).status_code == 200
+    assert c.post('/v1/launch-intents',json={"packet_id":"packet-1","experiment_id":"EXP-001",
+        "approval_id":"approve-1"}).status_code == 200
 
 
 def test_migration_round_trip_and_metadata(database):
@@ -66,6 +87,7 @@ def test_auth_and_missing_publication_fail_closed(database):
     assert anonymous.post("/v1/experiments", json=experiment()).status_code == 401
     c = client(database)
     assert c.post("/v1/experiments", json=experiment()).status_code == 200
+    launch(c)
     assert c.post("/v1/events", json=event("COMMISSION_SETTLED", "s1", "2.00")).status_code == 409
     assert c.post("/v1/events", json=event("PUBLISHED", "video-1", "2.00")).status_code == 422
     assert c.post("/v1/events", json=event("PUBLISHED", "video-1")).status_code == 200
@@ -78,18 +100,19 @@ def test_restart_exact_retry_conflict_and_refund_revocation(database):
     assert c.post("/v1/experiments", json=experiment()).json()["duplicate"] is False
     assert c.post("/v1/experiments", json=experiment()).json()["duplicate"] is True
     assert c.post("/v1/experiments", json={**experiment(), "decision_id": "DEC-OTHER"}).status_code == 409
+    launch(c)
     for typ, ext, amount in [("PUBLISHED", "video", None), ("ORDER_CREATED", "order", None),
                              ("DELIVERED", "delivered", None), ("COMMISSION_SETTLED", "settlement", "2.00")]:
-        assert c.post("/v1/events", json=event(typ, ext, amount)).status_code == 200
+        assert c.post("/v1/events", json=event(typ, ext, amount, parent={"ORDER_CREATED":"video", "DELIVERED":"order", "COMMISSION_SETTLED":"order"}.get(typ))).status_code == 200
     assert c.post("/v1/costs", json={"experiment_id": "EXP-001", "amount_gbp": "0.01", "evidence_ref": "receipt:cost"}).status_code == 200
     before = c.get("/v1/experiments/EXP-001/economics").json()
     assert before["realized_contribution_gbp"] == "1.99"
     assert before["local_first_pound_candidate"] is True
     assert before["commercial_proof"] == "NOT_PROVEN"
     recovered = client(database)
-    assert recovered.post("/v1/events", json=event("COMMISSION_SETTLED", "settlement", "2.00")).json()["duplicate"] is True
-    assert recovered.post("/v1/events", json=event("COMMISSION_SETTLED", "settlement", "9.00")).status_code == 409
-    assert recovered.post("/v1/events", json=event("REFUNDED", "refund", "1.01")).status_code == 200
+    assert recovered.post("/v1/events", json=event("COMMISSION_SETTLED", "settlement", "2.00",parent="order")).json()["duplicate"] is True
+    assert recovered.post("/v1/events", json=event("COMMISSION_SETTLED", "settlement", "9.00",parent="order")).status_code == 409
+    assert recovered.post("/v1/events", json=event("REFUNDED", "refund", "1.01",parent="settlement")).status_code == 200
     after = recovered.get("/v1/experiments/EXP-001/economics").json()
     assert after["net_settled_gbp"] == "0.99"
     assert after["realized_contribution_gbp"] == "0.98"
@@ -103,9 +126,10 @@ def test_restart_exact_retry_conflict_and_refund_revocation(database):
 def test_later_cost_revokes_pound_without_overwriting_initial_receipt(database):
     c = client(database)
     c.post("/v1/experiments", json=experiment())
+    launch(c)
     for typ, ext, amount in [("PUBLISHED", "video", None), ("ORDER_CREATED", "order", None),
                              ("DELIVERED", "delivery", None), ("COMMISSION_SETTLED", "settlement", "2.00")]:
-        assert c.post("/v1/events", json=event(typ, ext, amount)).status_code == 200
+        assert c.post("/v1/events", json=event(typ, ext, amount, parent={"ORDER_CREATED":"video", "DELIVERED":"order", "COMMISSION_SETTLED":"order"}.get(typ))).status_code == 200
     assert c.post("/v1/costs", json={"experiment_id": "EXP-001", "amount_gbp": "0.00", "evidence_ref": "receipt:initial"}).status_code == 200
     assert c.get("/v1/experiments/EXP-001/economics").json()["local_first_pound_candidate"] is True
     adjustment = {"adjustment_id": "cost:camera:1", "experiment_id": "EXP-001", "amount_gbp": "1.01", "evidence_ref": "receipt:camera"}
@@ -121,6 +145,7 @@ def test_later_cost_revokes_pound_without_overwriting_initial_receipt(database):
 def test_money_and_cross_experiment_guards(database):
     c = client(database)
     assert c.post("/v1/experiments", json=experiment()).status_code == 200
+    launch(c)
     assert c.post("/v1/events", json=event("PUBLISHED", "video")).status_code == 200
     assert c.post("/v1/events", json=event("COMMISSION_SETTLED", "fractional", "1.001")).status_code == 422
     assert c.post("/v1/events", json=event("COMMISSION_SETTLED", "negative", "-1.00")).status_code == 422
@@ -151,17 +176,18 @@ def test_operator_browser_session_reads_server_truth_and_requires_csrf_for_write
 def test_settlement_five_cost_three_refund_two_revokes_first_pound_after_restart(database):
     c=client(database)
     assert c.post("/v1/experiments",json=experiment()).status_code==200
+    launch(c)
     for kind,external,amount in [("PUBLISHED","video-one",None),("ORDER_CREATED","order-one",None),
         ("DELIVERED","delivery-one",None),("COMMISSION_SETTLED","settlement-one","5.00")]:
-        assert c.post("/v1/events",json=event(kind,external,amount)).status_code==200
+        assert c.post("/v1/events",json=event(kind,external,amount,parent={"ORDER_CREATED":"video-one","DELIVERED":"order-one","COMMISSION_SETTLED":"order-one"}.get(kind))).status_code==200
     assert c.post("/v1/costs",json={"experiment_id":"EXP-001","amount_gbp":"3.00",
         "evidence_ref":"receipt:cost:three"}).status_code==200
     assert c.get("/v1/portfolio").json()["experiments"][0]["realizedContributionGbp"]=="2.00"
     assert c.get("/v1/portfolio").json()["experiments"][0]["firstPoundCandidate"] is True
-    assert c.post("/v1/events",json=event("REFUNDED","refund-one","2.00")).status_code==200
+    assert c.post("/v1/events",json=event("REFUNDED","refund-one","2.00",parent="settlement-one")).status_code==200
     restarted=client(database)
     assert restarted.get("/v1/portfolio").json()["experiments"][0]["realizedContributionGbp"]=="0.00"
     assert restarted.get("/v1/portfolio").json()["experiments"][0]["firstPoundCandidate"] is False
     assert restarted.get("/v1/experiments/EXP-001/economics").json()["commercial_proof"]=="NOT_PROVEN"
-    assert restarted.post("/v1/events",json=event("REFUNDED","refund-two","4.00")).status_code==200
+    assert restarted.post("/v1/events",json=event("REFUNDED","refund-two","4.00",parent="settlement-one")).status_code==200
     assert restarted.get("/v1/portfolio").json()["experiments"][0]["realizedContributionGbp"]=="-4.00"

@@ -12,8 +12,13 @@ export async function apiJson<T>(path:string, init?:RequestInit):Promise<T> {
   let response:Response;
   try {response=await fetch(path,{credentials:'same-origin',cache:'no-store',...init})}
   catch {throw new Error('BACKEND UNAVAILABLE')}
-  if(!response.ok)throw new Error(response.status===401?'Operator session expired':
-    response.status===503?'Server configuration required':`Backend rejected request (${response.status})`);
+  if(!response.ok){
+    const body:unknown=await response.json().catch(()=>null);
+    const detail=typeof body==='object'&&body!==null&&'detail' in body&&typeof body.detail==='string'?
+      body.detail.slice(0,200):null;
+    throw new Error(response.status===401?'Operator session expired':
+      response.status===503?'Server configuration required':detail??`Backend rejected request (${response.status})`);
+  }
   return response.json() as Promise<T>;
 }
 
@@ -22,3 +27,9 @@ export function operatorCsrf():string {
 }
 
 export const getPortfolio=()=>apiJson<Portfolio>('/v1/portfolio');
+export type CapitalState={status:'UNKNOWN'}|{status:'ACTIVE';authorityId:string;availableCapitalGbp:string;
+  capitalLimitGbp:string;lossLimitGbp:string;minimumAllocationScore:number;approvedAt:string;evidenceRef:string};
+export type LearningState={records:{learningId:string;experimentId:string;contributionGbp:string;current:boolean}[];
+  source:'MANUAL_ASSERTION'};
+export const getCapital=()=>apiJson<CapitalState>('/v1/capital-authority');
+export const getLearning=()=>apiJson<LearningState>('/v1/learning');
