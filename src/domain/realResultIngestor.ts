@@ -40,9 +40,8 @@ export class RealResultIngestor {
   ingest(input: RealResultInput): RealResultReceipt {
     validate(input);
     const key = `${input.source}::${input.externalEventId}`;
-    const duplicate = this.evidenceByEventKey.has(key);
 
-    const event = this.ledger.recordEvent({
+    const recorded = this.ledger.recordEvent({
       eventId: key,
       source: input.source,
       externalEventId: input.externalEventId,
@@ -53,12 +52,12 @@ export class RealResultIngestor {
       amountGbp: input.amountGbp,
     });
 
-    if (!duplicate) this.evidenceByEventKey.set(key, input.evidenceRef);
+    if (!recorded.duplicate) this.evidenceByEventKey.set(key, input.evidenceRef);
 
     return {
       accepted: true,
-      duplicate,
-      event,
+      duplicate: recorded.duplicate,
+      event: recorded.record,
       reward: resolveReward(this.ledger.eventsForExperiment(input.experimentId)),
       evidenceRef: this.evidenceByEventKey.get(key)!,
     };
