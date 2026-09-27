@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">TikTok Shop Profit Agent</string>
+    <string name="title_activity_main">TikTok Shop Profit Agent</string>
+    <string name="package_name">com.tiktokshopprofitagent.app</string>
+    <string name="custom_url_scheme">com.tiktokshopprofitagent.app</string>
+</resources>

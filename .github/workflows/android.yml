@@ -1,0 +1,57 @@
+name: Android Debug APK
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      ANDROID_APP_ORIGIN: ${{ vars.ANDROID_APP_ORIGIN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: 'platform-tools platforms;android-36 build-tools;36.0.0'
+      - run: npm ci
+      - run: npm run typecheck && npm test && npm run build
+      - name: Check bundled assets and configuration
+        run: |
+          if rg -n 'TIKTOK_CLIENT_SECRET|OPERATOR_API_TOKEN|TIKTOK_TOKEN_ENCRYPTION_KEY|DATABASE_URL' dist; then
+            echo 'Server credential reference found in bundled frontend' >&2
+            exit 1
+          fi
+          test -f dist/index.html
+          test -f android/app/src/main/AndroidManifest.xml
+      - run: npx cap sync android
+      - name: Build debug APK
+        working-directory: android
+        run: bash ./gradlew --no-daemon assembleDebug
+      - name: Verify APK identity and permissions
+        run: |
+          apk=android/app/build/outputs/apk/debug/app-debug.apk
+          test -s "$apk"
+          unzip -t "$apk" | tail -1
+          test "$(unzip -l "$apk" | rg 'assets/public/index.html' | wc -l)" -eq 1
+          "$ANDROID_HOME/build-tools/36.0.0/aapt" dump badging "$apk" > /tmp/apk-badging.txt
+          rg "^package: name='com.tiktokshopprofitagent.app' versionCode='1' versionName='1.0'" /tmp/apk-badging.txt
+          rg "^uses-permission: name='android.permission.INTERNET'" /tmp/apk-badging.txt
+          test "$(rg -c '^uses-permission:' /tmp/apk-badging.txt)" -eq 1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tiktok-shop-profit-agent-android-debug
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 14

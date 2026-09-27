@@ -8,6 +8,7 @@ from uuid import uuid4
 
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import create_engine, select
 from sqlalchemy.exc import IntegrityError
@@ -201,4 +202,7 @@ def create_app(database_url: str | None = None, operator_token: str | None = Non
                 raise HTTPException(status_code=409, detail="Concurrent cost adjustment identity conflict") from None
         return {"adjustment_id": item.adjustment_id, "duplicate": False}
 
+    web_dir = os.environ.get("FRONTEND_DIST_DIR")
+    if web_dir:
+        app.mount("/", StaticFiles(directory=web_dir, html=True), name="web")
     return app

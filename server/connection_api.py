@@ -188,19 +188,40 @@ def add_connection_routes(app, engine, provider=None, *, login_secret=None, encr
             user_session = operator(request, session)
             state = secrets.token_urlsafe(48)
             session.add(TikTokOAuthIntent(state_hash=digest(state), session_hash=user_session.session_hash,
-                expires_at=now_utc() + timedelta(minutes=5)))
+                expires_at=now_utc() + timedelta(minutes=5), platform="WEB"))
             session.commit()
         return RedirectResponse(service.authorization_url(state), status_code=302)
+
+    @router.get("/v1/tiktok/authorize-native")
+    def authorize_native(request: Request):
+        service, _ = require_ready()
+        with Session(engine) as session:
+            user_session = operator(request, session)
+            state = secrets.token_urlsafe(48)
+            session.add(TikTokOAuthIntent(state_hash=digest(state), session_hash=user_session.session_hash,
+                expires_at=now_utc() + timedelta(minutes=5), platform="ANDROID"))
+            session.commit()
+        return {"authorizationUrl": service.authorization_url(state)}
 
     @router.get("/v1/tiktok/callback")
     def callback(request: Request, state: str = "", code: str = "", error: str = ""):
         service, crypto = require_ready()
         with Session(engine) as session:
-            user_session = operator(request, session)
             intent = session.scalar(select(TikTokOAuthIntent).where(
                 TikTokOAuthIntent.state_hash == digest(state)).with_for_update()) if state else None
-            if intent is None or intent.session_hash != user_session.session_hash or intent.consumed_at or utc(intent.expires_at) <= now_utc():
+            if intent is None or intent.consumed_at or utc(intent.expires_at) <= now_utc():
                 raise HTTPException(403, "Authorization state invalid or expired")
+            if intent.platform == "WEB":
+                user_session = operator(request, session)
+                if intent.session_hash != user_session.session_hash:
+                    raise HTTPException(403, "Authorization session mismatch")
+            elif intent.platform == "ANDROID":
+                owner = session.get(OperatorSession, intent.session_hash)
+                if owner is None or utc(owner.expires_at) <= now_utc():
+                    raise HTTPException(403, "Authorization session expired")
+            else:
+                raise HTTPException(403, "Authorization platform invalid")
+            platform = intent.platform
             intent.consumed_at = now_utc()
             session.commit()  # Consume before external exchange: callback replay cannot duplicate effects.
         if error or not code:
@@ -230,7 +251,7 @@ def add_connection_routes(app, engine, provider=None, *, login_secret=None, encr
             record.display_name = display_name
             save_tokens(record, tokens, crypto, current)
             session.commit()
-        return RedirectResponse("/", status_code=303)
+        return RedirectResponse("com.tiktokshopprofitagent.app://oauth-return" if platform == "ANDROID" else "/", status_code=303)
 
     @router.post("/v1/tiktok/disconnect")
     def disconnect(request: Request):

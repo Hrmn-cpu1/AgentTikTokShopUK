@@ -1,5 +1,6 @@
 """Fake official provider: engineering coverage without real commercial authorization."""
 from datetime import datetime, timedelta, timezone
+from hashlib import sha256
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
@@ -12,7 +13,7 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from server.api import create_app
-from server.models import TikTokConnection, TikTokOAuthIntent
+from server.models import OperatorSession, TikTokConnection, TikTokOAuthIntent
 from server.tiktok_provider import ProviderError, Tokens
 
 TOKEN = "test-only-operator-secret-32-characters-long"
@@ -221,3 +222,30 @@ def test_provider_identity_revocation_is_revalidated_and_manual_proof_expires(da
         record.last_validated_at=datetime.now(timezone.utc)-timedelta(minutes=16)
         session.commit()
     assert c.get("/v1/tiktok/connection").json()["connection"]["status"]=="UNKNOWN"
+
+
+def test_android_system_browser_callback_has_one_use_session_bound_state(database):
+    provider=FakeProvider()
+    app=browser(database,provider)
+    login(app)
+    start=app.get("/v1/tiktok/authorize-native")
+    assert start.status_code==200
+    url=start.json()["authorizationUrl"]
+    assert url.startswith("https://www.tiktok.com/v2/auth/authorize/")
+    state=parse_qs(urlparse(url).query)["state"][0]
+    chrome=browser(database,provider)  # System browser has a different cookie jar.
+    assert chrome.get("/v1/tiktok/callback",params={"state":"wrong","code":"valid-code"}).status_code==403
+    result=chrome.get("/v1/tiktok/callback",params={"state":state,"code":"valid-code"},follow_redirects=False)
+    assert result.status_code==303
+    assert result.headers["location"]=="com.tiktokshopprofitagent.app://oauth-return"
+    assert "secret" not in result.headers["location"]
+    assert chrome.get("/v1/tiktok/callback",params={"state":state,"code":"valid-code"}).status_code==403
+    assert app.get("/v1/tiktok/connection").json()["capabilities"]["IDENTITY"]=="AVAILABLE"
+    another=app.get("/v1/tiktok/authorize-native").json()["authorizationUrl"]
+    pending=parse_qs(urlparse(another).query)["state"][0]
+    with Session(create_engine(database)) as session:
+        intent=session.get(TikTokOAuthIntent, sha256(pending.encode()).hexdigest())
+        owner=session.get(OperatorSession,intent.session_hash)
+        owner.expires_at=datetime.now(timezone.utc)-timedelta(seconds=1)
+        session.commit()
+    assert chrome.get("/v1/tiktok/callback",params={"state":pending,"code":"valid-code"}).status_code==403

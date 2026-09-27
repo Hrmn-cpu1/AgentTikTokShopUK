@@ -1,4 +1,7 @@
 import { useEffect, useState } from 'react';
+import { Capacitor } from '@capacitor/core';
+import { App as NativeApp } from '@capacitor/app';
+import { Browser } from '@capacitor/browser';
 
 type Capability = 'AVAILABLE' | 'REQUIRES_APPROVAL' | 'BLOCKED' | 'UNKNOWN';
 type Connection = { connectionId:string; providerUserId:string; displayName:string|null;
@@ -19,6 +22,8 @@ async function json<T>(path:string, init?:RequestInit):Promise<T> {
 }
 
 export default function ConnectionGate({children}:{children:React.ReactNode}) {
+  const native=Capacitor.isNativePlatform();
+  const nativeBackendConfigured=window.location.protocol==='https:' && window.location.hostname!=='localhost';
   const [phase,setPhase] = useState<'loading'|'login'|'connection'|'error'>('loading');
   const [connection,setConnection] = useState<State|null>(null);
   const [accessKey,setAccessKey] = useState('');
@@ -37,12 +42,43 @@ export default function ConnectionGate({children}:{children:React.ReactNode}) {
     catch (error) {setMessage(error instanceof Error?error.message:'Server unavailable');setPhase('error');}
   };
   useEffect(()=>{
+    if(native && !nativeBackendConfigured)return;
     void refresh();
     const timer=window.setInterval(()=>{void refresh()},60_000);
     const visible=()=>{if(document.visibilityState==='visible')void refresh()};
     document.addEventListener('visibilitychange',visible);
     return ()=>{window.clearInterval(timer);document.removeEventListener('visibilitychange',visible)};
   },[]);
+
+  useEffect(()=>{
+    if(!native || !nativeBackendConfigured)return;
+    const back=NativeApp.addListener('backButton',()=>{
+      if(limitedOpen)setLimitedOpen(false);
+      else void NativeApp.minimizeApp();
+    });
+    const link=NativeApp.addListener('appUrlOpen',({url})=>{
+      if(url==='com.tiktokshopprofitagent.app://oauth-return')void refresh();
+    });
+    const active=NativeApp.addListener('appStateChange',({isActive})=>{if(isActive)void refresh()});
+    return ()=>{void Promise.all([back,link,active]).then(handles=>handles.forEach(handle=>void handle.remove()))};
+  },[native,nativeBackendConfigured,limitedOpen]);
+
+  const startTikTok = async () => {
+    setMessage('');
+    try {
+      if(native){
+        const response=await json<{authorizationUrl:string}>('/v1/tiktok/authorize-native');
+        const url=new URL(response.authorizationUrl);
+        if(url.origin!=='https://www.tiktok.com' || url.pathname!=='/v2/auth/authorize/')throw new Error('TikTok authorization address is invalid');
+        await Browser.open({url:url.href});
+      }else window.location.assign('/v1/tiktok/authorize');
+    }catch(error){setMessage(error instanceof Error?error.message:'TikTok authorization unavailable')}
+  };
+
+  if(native && !nativeBackendConfigured)return <div className="connection-shell"><h1>TikTok Shop Profit Agent 🇬🇧</h1>
+    <p>Connect your TikTok account to start.</p><button className="connection-primary" disabled>Continue with TikTok</button>
+    <p className="connection-warning">BACKEND UNAVAILABLE · This APK has no production HTTPS backend configured. Login and TikTok connection are disabled.</p>
+    <p className="connection-note">This is an installable Android test build. No account or commercial result is connected.</p></div>;
 
   const login = async (event:React.FormEvent) => {
     event.preventDefault();setMessage('');
@@ -80,7 +116,7 @@ export default function ConnectionGate({children}:{children:React.ReactNode}) {
     </form>{message&&<p role="alert">{message}</p>}</div>;
   if (!connection?.connection || connection.connection.status==='REVOKED') return <div className="connection-shell">
     <h1>TikTok Shop Profit Agent 🇬🇧</h1><p>Connect your TikTok account to start.</p>
-    {connection?.authorizationConfigured?<a className="connection-primary" href="/v1/tiktok/authorize">Continue with TikTok</a>:
+    {connection?.authorizationConfigured?<button className="connection-primary" onClick={()=>{void startTikTok()}}>Continue with TikTok</button>:
       <><button className="connection-primary" disabled>Continue with TikTok</button><p>Official TikTok developer app credentials and server encryption are required before connecting.</p></>}
     <p className="connection-note">The agent only operates with permissions explicitly granted by your TikTok account. Connecting does not grant Shop, Affiliate or publishing access.</p>
     {message&&<p role="alert">{message}</p>}</div>;
@@ -100,7 +136,7 @@ export default function ConnectionGate({children}:{children:React.ReactNode}) {
         <button>Record manual verification</button></form>}
       {connection.mode==='MANUAL_VERIFIED'&&<><p className="connection-note">UK: {connection.connection.manualVerification?.ukMarketEvidenceRef} · Affiliate: {connection.connection.manualVerification?.affiliateEvidenceRef}</p>
         <button onClick={()=>setLimitedOpen(true)}>Open manual workspace</button></>}
-    </>:<a className="connection-primary" href="/v1/tiktok/authorize">Reconnect TikTok</a>}
+    </>:<button className="connection-primary" onClick={()=>{void startTikTok()}}>Reconnect TikTok</button>}
     <button className="connection-secondary" onClick={()=>{void disconnect()}}>Disconnect TikTok</button>
     {message&&<p role="alert">{message}</p>}
     {limitedOpen&&active&&connection.mode==='MANUAL_VERIFIED'&&<div className="limited-workspace"><button onClick={()=>setLimitedOpen(false)}>Back to account status</button>{children}</div>}

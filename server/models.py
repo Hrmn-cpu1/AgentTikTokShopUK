@@ -77,6 +77,7 @@ class TikTokOAuthIntent(Base):
     session_hash: Mapped[str] = mapped_column(ForeignKey("operator_sessions.session_hash"), nullable=False)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    platform: Mapped[str] = mapped_column(String(10), nullable=False, default="WEB")
 
 
 class TikTokConnection(Base):
