@@ -13,7 +13,7 @@ describe('economics engine', () => {
     expect(result.expectedSettledCommission).toBe(35.99);
     expect(result.expectedRealizedProfit).toBe(27.99);
     expect(result.cashVelocity).toBe(0.87);
-    expect(result.expectedGbpPerShot).toBe(14);
+    expect(result.expectedGbpPerShot).toBe(13.99);
     expect(result.expectedGbpPerHour).toBe(9.33);
   });
 
