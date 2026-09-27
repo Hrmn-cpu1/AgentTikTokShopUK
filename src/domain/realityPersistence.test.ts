@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { BrowserRealityEvidenceStore, hydrateRealityRegistry, persistRealityEvidence, REALITY_STORAGE_KEY } from './realityPersistence';
-import type { RealityEvidence } from './realityEvidenceRegistry';
+import { RealityEvidenceRegistry, type RealityEvidence } from './realityEvidenceRegistry';
 
 const item:RealityEvidence={evidenceId:'E1',subject:'AFFILIATE_ACCESS',state:'VERIFIED',source:'TIKTOK_UI',observedAt:'2026-09-27T17:00:00Z',validUntil:null,reference:'creator-center:affiliate',containsSensitiveData:false};
 function storage(initial:string|null=null){let value=initial;return {getItem:()=>value,setItem:(_k:string,v:string)=>{value=v},value:()=>value};}
