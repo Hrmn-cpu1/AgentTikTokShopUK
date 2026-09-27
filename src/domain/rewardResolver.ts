@@ -82,7 +82,7 @@ export function resolveReward(events: CommerceEvent[]): RewardResolution {
     return { stage, maturity: 'MATURE', proxyReward, settledCommissionGbp: 0, grossSettledCommissionGbp:0, refundedAmountGbp:0, refunded: false, economicTruthKnown: false };
   }
   if (stage === 'ORDER') {
-    return { stage, maturity: 'PARTIAL', proxyReward, settledCommissionGbp: 0, refunded: false, economicTruthKnown: false };
+    return { stage, maturity: 'PARTIAL', proxyReward, settledCommissionGbp: 0, grossSettledCommissionGbp, refundedAmountGbp, refunded: false, economicTruthKnown: false };
   }
-  return { stage, maturity: 'EARLY', proxyReward, settledCommissionGbp: 0, refunded: false, economicTruthKnown: false };
+  return { stage, maturity: 'EARLY', proxyReward, settledCommissionGbp: 0, grossSettledCommissionGbp, refundedAmountGbp, refunded: false, economicTruthKnown: false };
 }
