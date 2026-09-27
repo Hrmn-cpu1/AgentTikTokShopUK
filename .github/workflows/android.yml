@@ -29,7 +29,7 @@ jobs:
       - run: npm run typecheck && npm test && npm run build
       - name: Check bundled assets and configuration
         run: |
-          if rg -n 'TIKTOK_CLIENT_SECRET|OPERATOR_API_TOKEN|TIKTOK_TOKEN_ENCRYPTION_KEY|DATABASE_URL' dist; then
+          if grep -REn 'TIKTOK_CLIENT_SECRET|OPERATOR_API_TOKEN|TIKTOK_TOKEN_ENCRYPTION_KEY|DATABASE_URL' dist; then
             echo 'Server credential reference found in bundled frontend' >&2
             exit 1
           fi
@@ -44,11 +44,11 @@ jobs:
           apk=android/app/build/outputs/apk/debug/app-debug.apk
           test -s "$apk"
           unzip -t "$apk" | tail -1
-          test "$(unzip -l "$apk" | rg 'assets/public/index.html' | wc -l)" -eq 1
+          test "$(unzip -l "$apk" | grep 'assets/public/index.html' | wc -l)" -eq 1
           "$ANDROID_HOME/build-tools/36.0.0/aapt" dump badging "$apk" > /tmp/apk-badging.txt
-          rg "^package: name='com.tiktokshopprofitagent.app' versionCode='1' versionName='1.0'" /tmp/apk-badging.txt
-          rg "^uses-permission: name='android.permission.INTERNET'" /tmp/apk-badging.txt
-          test "$(rg -c '^uses-permission:' /tmp/apk-badging.txt)" -eq 1
+          grep "^package: name='com.tiktokshopprofitagent.app' versionCode='1' versionName='1.0'" /tmp/apk-badging.txt
+          grep "^uses-permission: name='android.permission.INTERNET'" /tmp/apk-badging.txt
+          test "$(grep -c '^uses-permission:' /tmp/apk-badging.txt)" -eq 1
       - uses: actions/upload-artifact@v4
         with:
           name: tiktok-shop-profit-agent-android-debug
