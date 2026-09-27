@@ -22,6 +22,7 @@ export type CommerceEvent = {
   type: EventType;
   occurredAt: string;
   amountGbp: number | null;
+  evidenceRef?: string;
 };
 
 export class ActionEventLedger {
