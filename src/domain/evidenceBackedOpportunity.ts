@@ -10,6 +10,6 @@ export function evaluateEvidenceBackedOpportunity(product:RealProductRecord,d:Op
   confidence:d.confidence,creativePotential:d.creativePotential!,supplyReliability:d.supplyReliability!,informationValue:d.informationValue!,
   opportunityWindow:d.opportunityWindow!,riskPenalty:d.riskPenalty!,urgency:d.urgency!,
   marketEligible:true,policyAllowed:true,accountRiskAcceptable:true,expectedLoss:d.experimentCostGbp!,
-  limits:{capitalLimit:Math.max(d.capitalRequiredGbp!,d.experimentCostGbp!),lossLimit:d.experimentCostGbp!},
+  limits:{capitalLimit:Math.max(d.capitalRequiredGbp!,d.experimentCostGbp!),availableCapital:Math.max(d.capitalRequiredGbp!,d.experimentCostGbp!),lossLimit:d.experimentCostGbp!,minimumAllocationScore:0},
  });
 }
