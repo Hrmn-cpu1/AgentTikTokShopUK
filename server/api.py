@@ -13,7 +13,7 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from .models import CommerceEvent, Experiment, ExperimentCost
+from .models import CommerceEvent, Experiment, ExperimentCost, ExperimentCostAdjustment
 
 
 Money = Decimal
@@ -52,6 +52,11 @@ class CostInput(BaseModel):
     experiment_id: str = Field(min_length=1, max_length=100)
     amount_gbp: Money = Field(ge=0, max_digits=18, decimal_places=2)
     evidence_ref: str = Field(min_length=6, max_length=500)
+
+
+class CostAdjustmentInput(CostInput):
+    adjustment_id: str = Field(min_length=1, max_length=100)
+    amount_gbp: Money = Field(gt=0, max_digits=18, decimal_places=2)
 
 
 def create_app(database_url: str | None = None, operator_token: str | None = None) -> FastAPI:
@@ -149,16 +154,37 @@ def create_app(database_url: str | None = None, operator_token: str | None = Non
                 raise HTTPException(status_code=404, detail="Unknown experiment")
             events = session.scalars(select(CommerceEvent).where(CommerceEvent.experiment_id == experiment_id)).all()
             cost = session.get(ExperimentCost, experiment_id)
+            adjustments = session.scalars(select(ExperimentCostAdjustment).where(
+                ExperimentCostAdjustment.experiment_id == experiment_id)).all()
             types = {event.event_type for event in events}
             mature = {"PUBLISHED", "ORDER_CREATED", "DELIVERED", "COMMISSION_SETTLED"}.issubset(types)
             settled = sum((event.amount_gbp for event in events if event.event_type == "COMMISSION_SETTLED"), Decimal("0"))
             refunds = sum((event.amount_gbp for event in events if event.event_type == "REFUNDED"), Decimal("0"))
             net = max(Decimal("0"), settled - refunds) if "COMMISSION_SETTLED" in types else None
-            contribution = net - cost.amount_gbp if net is not None and cost is not None else None
+            observed_cost = cost.amount_gbp + sum((entry.amount_gbp for entry in adjustments), Decimal("0")) if cost else None
+            contribution = net - observed_cost if net is not None and observed_cost is not None else None
             return {"experiment_id": experiment_id, "net_settled_gbp": str(net) if net is not None else None,
-                    "observed_cost_gbp": str(cost.amount_gbp) if cost else None,
+                    "observed_cost_gbp": str(observed_cost) if observed_cost is not None else None,
                     "realized_contribution_gbp": str(contribution) if contribution is not None else None,
                     "local_first_pound_candidate": bool(mature and contribution is not None and contribution >= Decimal("1.00")),
                     "commercial_proof": "NOT_PROVEN", "observation_source": "MANUAL_ASSERTION"}
+
+    @app.post("/v1/cost-adjustments", dependencies=[Depends(require_operator)])
+    def add_cost(item: CostAdjustmentInput):
+        with Session(engine) as session:
+            if session.get(ExperimentCost, item.experiment_id) is None:
+                raise HTTPException(status_code=409, detail="Initial observed cost required first")
+            existing = session.get(ExperimentCostAdjustment, item.adjustment_id)
+            if existing:
+                if any(getattr(existing, key) != value for key, value in item.model_dump().items()):
+                    raise HTTPException(status_code=409, detail="Conflicting cost adjustment id")
+                return {"adjustment_id": item.adjustment_id, "duplicate": True}
+            session.add(ExperimentCostAdjustment(**item.model_dump(), observed_at=datetime.now(timezone.utc)))
+            try:
+                session.commit()
+            except IntegrityError:
+                session.rollback()
+                raise HTTPException(status_code=409, detail="Concurrent cost adjustment identity conflict") from None
+        return {"adjustment_id": item.adjustment_id, "duplicate": False}
 
     return app

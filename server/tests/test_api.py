@@ -86,6 +86,24 @@ def test_restart_exact_retry_conflict_and_refund_revocation(database):
     assert after["commercial_proof"] == "NOT_PROVEN"
 
 
+def test_later_cost_revokes_pound_without_overwriting_initial_receipt(database):
+    c = client(database)
+    c.post("/v1/experiments", json=experiment())
+    for typ, ext, amount in [("PUBLISHED", "video", None), ("ORDER_CREATED", "order", None),
+                             ("DELIVERED", "delivery", None), ("COMMISSION_SETTLED", "settlement", "2.00")]:
+        assert c.post("/v1/events", json=event(typ, ext, amount)).status_code == 200
+    assert c.post("/v1/costs", json={"experiment_id": "EXP-001", "amount_gbp": "0.00", "evidence_ref": "receipt:initial"}).status_code == 200
+    assert c.get("/v1/experiments/EXP-001/economics").json()["local_first_pound_candidate"] is True
+    adjustment = {"adjustment_id": "cost:camera:1", "experiment_id": "EXP-001", "amount_gbp": "1.01", "evidence_ref": "receipt:camera"}
+    assert c.post("/v1/cost-adjustments", json=adjustment).json()["duplicate"] is False
+    assert client(database).post("/v1/cost-adjustments", json=adjustment).json()["duplicate"] is True
+    assert c.post("/v1/cost-adjustments", json={**adjustment, "amount_gbp": "1.02"}).status_code == 409
+    result = client(database).get("/v1/experiments/EXP-001/economics").json()
+    assert result["observed_cost_gbp"] == "1.01"
+    assert result["realized_contribution_gbp"] == "0.99"
+    assert result["local_first_pound_candidate"] is False
+
+
 def test_money_and_cross_experiment_guards(database):
     c = client(database)
     assert c.post("/v1/experiments", json=experiment()).status_code == 200

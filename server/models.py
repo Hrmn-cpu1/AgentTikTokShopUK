@@ -52,3 +52,13 @@ class ExperimentCost(Base):
     evidence_ref: Mapped[str] = mapped_column(String(500), nullable=False)
     observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     __table_args__ = (CheckConstraint("amount_gbp >= 0", name="nonnegative_cost"),)
+
+
+class ExperimentCostAdjustment(Base):
+    __tablename__ = "experiment_cost_adjustments"
+    adjustment_id: Mapped[str] = mapped_column(String(100), primary_key=True)
+    experiment_id: Mapped[str] = mapped_column(ForeignKey("experiments.experiment_id"), nullable=False)
+    amount_gbp: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
+    evidence_ref: Mapped[str] = mapped_column(String(500), nullable=False)
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    __table_args__ = (CheckConstraint("amount_gbp > 0", name="positive_adjustment"),)
