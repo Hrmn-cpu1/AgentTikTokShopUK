@@ -4,6 +4,7 @@ import { RealityEvidenceRegistry, type RealitySubject } from './domain/realityEv
 import { ingestOperatorEvidence } from './domain/operatorEvidenceIntake';
 import { orchestrateReadiness } from './domain/realityReadinessOrchestrator';
 import { BrowserRealityEvidenceStore, hydrateRealityRegistry, persistRealityEvidence } from './domain/realityPersistence';
+import { buildOnboardingStep, validateEvidenceReference } from './domain/realityOnboarding';
 
 type Page = 'home'|'radar'|'opportunity'|'tests'|'money'|'setup';
 const products = [
@@ -49,6 +50,7 @@ function SetupPage(){
  const [store]=useState(()=>typeof window!=='undefined'?new BrowserRealityEvidenceStore(window.localStorage):null);
  const [registry]=useState(()=>store?hydrateRealityRegistry(store):new RealityEvidenceRegistry());
  const [,render]=useState(0);
+ const [reference,setReference]=useState('');
  const now=new Date().toISOString();
  const decision=orchestrateReadiness(registry,now,true);
  const states=realitySubjects.map(subject=>registry.resolve(subject,now));
@@ -57,25 +59,27 @@ function SetupPage(){
  const tone=decision.launch.readiness==='READY'?'green':decision.launch.readiness==='BLOCKED'?'blocked':'yellow';
 
  const record=(subject:RealitySubject,state:'VERIFIED'|'BLOCKED'|'UNKNOWN')=>{
+   const safeReference=validateEvidenceReference(reference);
    ingestOperatorEvidence(registry,{
      evidenceId:`operator:${subject}:${Date.now()}`, subject, state, source:'OPERATOR_VERIFIED',
-     observedAt:new Date().toISOString(), reference:`operator-check:${subject.toLowerCase()}`,
+     observedAt:new Date().toISOString(), reference:safeReference,
    });
    if(store){
      const subjects=realitySubjects.map(s=>registry.resolve(s,new Date().toISOString()));
      const persisted=subjects.filter(s=>s.evidenceId).map(s=>({
        evidenceId:s.evidenceId!, subject:s.subject, state:s.state, source:'OPERATOR_VERIFIED' as const,
-       observedAt:new Date().toISOString(), validUntil:null, reference:`operator-check:${s.subject.toLowerCase()}`, containsSensitiveData:false as const,
+       observedAt:new Date().toISOString(), validUntil:null, reference:s.subject===subject?safeReference:`persisted:${s.evidenceId}`, containsSensitiveData:false as const,
      }));
      persistRealityEvidence(store,persisted);
    }
+   setReference('');
    render(x=>x+1);
  };
 
  return <><Header title="UK Reality Check"/><main>
   <section className="setup-hero"><Settings2/><div><h2>EXP-001 launch checklist</h2><p>UI is now a projection of the evidence registry. No evidence means UNKNOWN.</p></div></section>
   <section className="card readiness-card"><div className="readiness-top"><div><small>VERIFIED REALITY</small><h2>{verified}/{realitySubjects.length}</h2></div><Pill tone={tone}>{decision.launch.readiness}</Pill></div><div className="progress"><i style={{width:`${Math.round((verified/realitySubjects.length)*100)}%`}}/></div></section>
-  {next&&<section className="next-proof"><small>NEXT PROOF · {decision.nextProbe?.dependencyTier}</small><h3>{realityLabels[next]}</h3><p>{decision.message}</p><div className="evidence-actions"><button onClick={()=>record(next,'VERIFIED')}><Check/> Verified</button><button onClick={()=>record(next,'BLOCKED')}><X/> Blocked</button></div></section>}
+  {next&&decision.nextProbe&&(()=>{const step=buildOnboardingStep(decision.nextProbe);return <section className="next-proof"><small>NEXT PROOF · TIER {decision.nextProbe.dependencyTier}</small><h3>{step.title}</h3><p>{step.instruction}</p><label className="evidence-field"><span>Evidence reference</span><input value={reference} onChange={e=>setReference(e.target.value)} placeholder={step.referenceHint}/><small>Record where you observed the status. Never paste passwords, tokens, identity document numbers or bank details.</small></label><div className="evidence-actions"><button disabled={reference.trim().length<6} onClick={()=>record(next,'VERIFIED')}><Check/> Verified</button><button disabled={reference.trim().length<6} onClick={()=>record(next,'BLOCKED')}><X/> Blocked</button></div></section>})()}
   {states.map((item,index)=><article className={'check-row '+(item.subject===next?'current':'')} key={item.subject}><span className={'step-no '+(item.state==='VERIFIED'?'done':item.state==='BLOCKED'?'blocked':'')}>{item.state==='VERIFIED'?<Check/>:index+1}</span><div className="grow"><b>{realityLabels[item.subject]}</b><small>{item.evidenceId?`Evidence: ${item.evidenceId}`:'No evidence recorded'}</small></div><Pill tone={item.state==='VERIFIED'?'green':item.state==='BLOCKED'?'blocked':'yellow'}>{item.state}</Pill></article>)}
   <section className={'eligibility '+tone}><ShieldCheck/><div><small>ORCHESTRATOR</small><h2>{decision.action}</h2></div></section>
   <p className="muted">{decision.message}</p>
