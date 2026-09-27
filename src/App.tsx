@@ -43,7 +43,7 @@ function TestsPage(){return <><Header title="Experiments"/><main><div className=
 function MoneyPage(){return <><Header title="Money"/><main><div className="demo">DEMO LEDGER · WITHDRAWAL REMAINS MANUAL</div><section className="hero money"><div><span>Realized contribution</span><h1>£0.00</h1><p>Settled commission − experiment costs</p></div><CircleDollarSign size={42}/></section><div className="grid3"><Metric label="Expected" value="£0.00"/><Metric label="Pending" value="£0.00"/><Metric label="Settled" value="£0.00"/></div><section className="card"><h3>Decision → Money trace</h3><div className="timeline"><b>Experiment</b><i/><b>Order</b><i/><b>Delivery</b><i/><b>Settlement</b><i/><b>Profit</b></div><p className="muted">No economic event recorded yet. Orders will never be counted as realized profit before settlement.</p></section><section className="card"><h3>Available for withdrawal</h3><div className="withdraw"><strong>£0.00</strong><Pill tone="blue">MANUAL</Pill></div><p>The agent never withdraws, transfers or changes payout destinations in V0.</p></section></main></>}
 const realityLabels: Record<RealitySubject,string> = {
  UK_ACCOUNT_ELIGIBILITY:'UK account eligibility', IDENTITY_KYC:'Identity / KYC', AFFILIATE_ACCESS:'Affiliate access',
- PAYOUT_METHOD:'Payout method', REAL_PRODUCT:'Real product selected', PRODUCT_FRESHNESS:'Product evidence freshness',
+ PAYOUT_METHOD:'Payout method', ACCOUNT_RISK:'Account risk status', REAL_PRODUCT:'Real product selected', PRODUCT_FRESHNESS:'Product evidence freshness',
  SUPPLY:'Supply availability', CREATIVE_APPROVAL:'Creative approval', PRODUCT_CLAIMS:'Product claims',
  CAPITAL_BOUND:'Capital bound', LOSS_BOUND:'Loss bound',
 };
