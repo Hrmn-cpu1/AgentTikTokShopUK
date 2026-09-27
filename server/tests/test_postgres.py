@@ -11,11 +11,12 @@ from server.api import create_app
 from server.models import TikTokConnection
 
 TOKEN = "ci-only-operator-token-longer-than-32-characters"
+POSTGRES_URL = os.environ.get("DATABASE_URL", "")
 
 
-@pytest.mark.skipif(not os.environ.get("DATABASE_URL", "").startswith("postgresql+psycopg://"), reason="PostgreSQL URL not configured")
+@pytest.mark.skipif(not POSTGRES_URL.startswith("postgresql+psycopg://"), reason="PostgreSQL URL not configured")
 def test_live_postgres_constraints_restart_and_decimal():
-    url = os.environ["DATABASE_URL"]
+    url = POSTGRES_URL
     engine = create_engine(url)
     assert "commerce_events" in inspect(engine).get_table_names()
     current = datetime.now(timezone.utc)
