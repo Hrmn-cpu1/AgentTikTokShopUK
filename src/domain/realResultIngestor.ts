@@ -29,8 +29,8 @@ function validate(input: RealResultInput) {
   if (input.amountGbp !== null && (!Number.isFinite(input.amountGbp) || input.amountGbp < 0)) {
     throw new Error('amountGbp must be finite and non-negative');
   }
-  if (input.type === 'COMMISSION_SETTLED' && input.amountGbp === null) {
-    throw new Error('settled commission requires an observed GBP amount');
+  if ((input.type === 'COMMISSION_SETTLED'||input.type==='REFUNDED') && input.amountGbp === null) {
+    throw new Error('settlement and refund require an observed GBP amount');
   }
 }
 

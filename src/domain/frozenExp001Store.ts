@@ -6,6 +6,7 @@ function validate(x:FrozenExp001Candidate):FrozenExp001Candidate{
  if(!x.product.productId||x.experiment.opportunityId!==x.product.productId)throw new Error('Frozen product trace mismatch');
  if(!Number.isFinite(Date.parse(x.frozenAt)))throw new Error('Invalid frozenAt');
  if(x.evidenceRefs.length===0)throw new Error('Frozen evidence required');
+ if(x.decisionTruth&&(x.decisionTruth.allocationDecision!=='ALLOCATE'||x.decisionTruth.marketEligibility!=='ELIGIBLE'||x.decisionTruth.policyAllowed!==true))throw new Error('Invalid frozen decision truth');
  return Object.freeze(structuredClone(x));
 }
 export function saveFrozenExp001(storage:Pick<Storage,'setItem'>,frozen:FrozenExp001Candidate){const safe=validate(frozen);storage.setItem(FROZEN_EXP001_STORAGE_KEY,JSON.stringify(safe));return safe}

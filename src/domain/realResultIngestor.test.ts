@@ -39,8 +39,9 @@ describe('real result ingestor', () => {
   it('lets a refund supersede earlier optimistic lifecycle evidence', () => {
     const ingestor = new RealResultIngestor();
     ingestor.ingest(base);
-    const receipt = ingestor.ingest({ ...base, externalEventId: 'refund-1', type: 'REFUNDED', evidenceRef: 'creator-center:affiliate-order:refund-1' });
-    expect(receipt.reward).toMatchObject({ stage: 'REFUND', refunded: true, economicTruthKnown: true });
+    expect(() => ingestor.ingest({ ...base, externalEventId: 'refund-1', type: 'REFUNDED', evidenceRef: 'creator-center:affiliate-order:refund-1' })).toThrow();
+    const receipt = ingestor.ingest({ ...base, externalEventId: 'refund-1', type: 'REFUNDED', amountGbp:0, evidenceRef: 'creator-center:affiliate-order:refund-1' });
+    expect(receipt.reward).toMatchObject({ stage: 'REFUND', refunded: true, economicTruthKnown: false });
   });
 
   it('keeps experiments isolated when real results arrive interleaved', () => {

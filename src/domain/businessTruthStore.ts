@@ -1,4 +1,5 @@
 import type { ActionRecord, CommerceEvent } from './actionEventLedger';
+import { assertLedgerSnapshot } from './actionEventLedger';
 
 export type LedgerSnapshot={actions:ActionRecord[];events:CommerceEvent[]};
 export interface BusinessTruthStore{load():LedgerSnapshot;save(snapshot:LedgerSnapshot):void}
@@ -10,12 +11,11 @@ export class BrowserBusinessTruthStore implements BusinessTruthStore{
  load():LedgerSnapshot{
   const raw=this.storage.getItem(BUSINESS_TRUTH_STORAGE_KEY);
   if(!raw) return {actions:[],events:[]};
-  try{
-   const x=JSON.parse(raw) as Partial<LedgerSnapshot>;
-   return {actions:Array.isArray(x.actions)?x.actions:[],events:Array.isArray(x.events)?x.events:[]};
-  }catch{return {actions:[],events:[]}}
+  const x:unknown=JSON.parse(raw);
+  assertLedgerSnapshot(x);
+  return structuredClone(x);
  }
- save(snapshot:LedgerSnapshot):void{this.storage.setItem(BUSINESS_TRUTH_STORAGE_KEY,JSON.stringify(snapshot))}
+ save(snapshot:LedgerSnapshot):void{assertLedgerSnapshot(snapshot);this.storage.setItem(BUSINESS_TRUTH_STORAGE_KEY,JSON.stringify(snapshot))}
 }
 
 export class MemoryBusinessTruthStore implements BusinessTruthStore{

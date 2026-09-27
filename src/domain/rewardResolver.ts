@@ -67,7 +67,7 @@ export function resolveReward(events: CommerceEvent[]): RewardResolution {
   if (refunded) {
     return {
       stage: 'REFUND', maturity: 'FINAL', proxyReward,
-      settledCommissionGbp, grossSettledCommissionGbp, refundedAmountGbp, refunded: true, economicTruthKnown: true,
+      settledCommissionGbp, grossSettledCommissionGbp, refundedAmountGbp, refunded: true, economicTruthKnown: events.some(event=>event.type==='COMMISSION_SETTLED'),
     };
   }
 

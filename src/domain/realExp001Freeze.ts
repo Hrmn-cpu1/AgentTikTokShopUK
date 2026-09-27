@@ -10,6 +10,7 @@ export type FrozenExp001Candidate = {
   allocationScore: number;
   expectedRealizedProfitGbp: number;
   evidenceRefs: readonly string[];
+  decisionTruth?:{allocationDecision:'ALLOCATE';marketEligibility:'ELIGIBLE';policyAllowed:true};
   frozenAt: string;
 };
 
@@ -20,6 +21,7 @@ export function freezeRealExp001(
   additionalEvidenceRefs: readonly string[] = [],
 ): FrozenExp001Candidate {
   if (result.allocation.decision !== 'ALLOCATE') throw new Error('EXP-001 cannot be frozen without an ALLOCATE decision');
+  if(!input.marketEligible||!input.policyAllowed||!input.accountRiskAcceptable)throw new Error('EXP-001 authority not proven');
   if (result.productId !== input.product.productId) throw new Error('Opportunity/product trace mismatch');
   if (!result.fresh) throw new Error('EXP-001 requires fresh product evidence');
   if (!Number.isFinite(Date.parse(frozenAt))) throw new Error('frozenAt must be a valid timestamp');
@@ -52,6 +54,7 @@ export function freezeRealExp001(
     allocationScore: result.allocation.allocationScore,
     expectedRealizedProfitGbp: result.economics.expectedRealizedProfit,
     evidenceRefs: Object.freeze([...evidenceRefs]),
+    decisionTruth:Object.freeze({allocationDecision:'ALLOCATE',marketEligibility:'ELIGIBLE',policyAllowed:true}),
     frozenAt,
   });
 }

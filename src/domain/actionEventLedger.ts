@@ -25,6 +25,26 @@ export type CommerceEvent = {
   evidenceRef?: string;
 };
 
+const eventTypes:EventType[]=['PUBLISHED','IMPRESSION','CLICK','ORDER_CREATED','DELIVERED','REFUNDED','COMMISSION_EXPECTED','COMMISSION_SETTLED'];
+const actionStatuses:ActionStatus[]=['PROPOSED','APPROVED','EXECUTING','SUCCEEDED','FAILED','UNKNOWN'];
+const nonempty=(value:unknown):value is string=>typeof value==='string'&&value.trim().length>0;
+const validMoney=(value:unknown)=>value===null||(typeof value==='number'&&Number.isFinite(value)&&value>=0&&Number.isSafeInteger(Math.round(value*100))&&Math.abs(value*100-Math.round(value*100))<1e-7);
+function assertAction(value:unknown):asserts value is ActionRecord{
+ const a=value as ActionRecord;
+ if(!a||!nonempty(a.actionId)||!nonempty(a.decisionId)||!nonempty(a.experimentId)||!nonempty(a.idempotencyKey)||!actionStatuses.includes(a.status)||!(a.externalId===null||nonempty(a.externalId)))throw new Error('Invalid persisted action');
+}
+function assertEvent(value:unknown):asserts value is CommerceEvent{
+ const e=value as CommerceEvent;
+ if(!e||!nonempty(e.eventId)||!nonempty(e.source)||!nonempty(e.externalEventId)||!nonempty(e.experimentId)||!(e.actionId===null||nonempty(e.actionId))||!eventTypes.includes(e.type)||!nonempty(e.occurredAt)||!Number.isFinite(Date.parse(e.occurredAt))||!validMoney(e.amountGbp)||!nonempty(e.evidenceRef)||((e.type==='COMMISSION_SETTLED'||e.type==='REFUNDED')&&e.amountGbp===null))throw new Error('Invalid persisted commerce event');
+}
+export function assertLedgerSnapshot(value:unknown):asserts value is {actions:ActionRecord[];events:CommerceEvent[]}{
+ const x=value as {actions:unknown;events:unknown};
+ if(!x||!Array.isArray(x.actions)||!Array.isArray(x.events))throw new Error('Invalid business truth snapshot');
+ const actions=new Set<string>(),events=new Set<string>();
+ for(const action of x.actions){assertAction(action);if(actions.has(action.idempotencyKey))throw new Error('Duplicate persisted action');actions.add(action.idempotencyKey)}
+ for(const event of x.events){assertEvent(event);const key=`${event.source}::${event.externalEventId}`;if(events.has(key))throw new Error('Duplicate persisted commerce event');events.add(key)}
+}
+
 export class ActionEventLedger {
   private actionsByIdempotency = new Map<string, ActionRecord>();
   private eventsBySourceKey = new Map<string, CommerceEvent>();
@@ -36,28 +56,21 @@ export class ActionEventLedger {
   private persist(){this.store?.save({actions:[...this.actionsByIdempotency.values()],events:[...this.eventsBySourceKey.values()]})}
 
   recordAction(action: ActionRecord): { record: ActionRecord; duplicate: boolean } {
-    if (!action.actionId || !action.decisionId || !action.experimentId || !action.idempotencyKey) {
-      throw new Error('Action requires actionId, decisionId, experimentId and idempotencyKey');
-    }
+    assertAction(action);
     const existing = this.actionsByIdempotency.get(action.idempotencyKey);
-    if (existing) return { record: structuredClone(existing), duplicate: true };
+    if (existing){if(JSON.stringify(existing)!==JSON.stringify(action))throw new Error('Conflicting action idempotency key');return { record: structuredClone(existing), duplicate: true }}
     this.actionsByIdempotency.set(action.idempotencyKey, structuredClone(action));
-    this.persist();
+    try{this.persist()}catch(error){this.actionsByIdempotency.delete(action.idempotencyKey);throw error}
     return { record: structuredClone(action), duplicate: false };
   }
 
   recordEvent(event: CommerceEvent): { record: CommerceEvent; duplicate: boolean } {
-    if (!event.eventId || !event.source || !event.externalEventId || !event.experimentId) {
-      throw new Error('Event requires eventId, source, externalEventId and experimentId');
-    }
-    if (event.amountGbp !== null && (!Number.isFinite(event.amountGbp) || event.amountGbp < 0)) {
-      throw new Error('amountGbp must be null or finite and non-negative');
-    }
+    assertEvent(event);
     const key = `${event.source}::${event.externalEventId}`;
     const existing = this.eventsBySourceKey.get(key);
-    if (existing) return { record: structuredClone(existing), duplicate: true };
+    if (existing){if(JSON.stringify(existing)!==JSON.stringify(event))throw new Error('Conflicting external event id');return { record: structuredClone(existing), duplicate: true }}
     this.eventsBySourceKey.set(key, structuredClone(event));
-    this.persist();
+    try{this.persist()}catch(error){this.eventsBySourceKey.delete(key);throw error}
     return { record: structuredClone(event), duplicate: false };
   }
 
