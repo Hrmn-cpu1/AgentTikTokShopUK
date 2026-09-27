@@ -6,6 +6,7 @@ import { orchestrateReadiness } from './domain/realityReadinessOrchestrator';
 import { BrowserRealityEvidenceStore, hydrateRealityRegistry, persistRealityEvidence } from './domain/realityPersistence';
 import { buildOnboardingStep, validateEvidenceReference } from './domain/realityOnboarding';
 import { ingestRealProduct, type RealProductRecord } from './domain/realProductIntake';
+import { readExecutionEnabled, writeExecutionEnabled } from './domain/realityCutoverGuard';
 
 type Page = 'home'|'radar'|'opportunity'|'tests'|'money'|'setup';
 const products = [
@@ -51,11 +52,12 @@ function SetupPage(){
  const [store]=useState(()=>typeof window!=='undefined'?new BrowserRealityEvidenceStore(window.localStorage):null);
  const [registry]=useState(()=>store?hydrateRealityRegistry(store):new RealityEvidenceRegistry());
  const [,render]=useState(0);
+ const [executionEnabled,setExecutionEnabled]=useState(()=>typeof window!=='undefined'?readExecutionEnabled(window.localStorage):false);
  const [reference,setReference]=useState('');
  const [realProduct,setRealProduct]=useState<RealProductRecord|null>(null);
  const [productDraft,setProductDraft]=useState({productId:'',listingRef:'',productName:'',sellerName:'',priceGbp:'',commissionRate:''});
  const now=new Date().toISOString();
- const decision=orchestrateReadiness(registry,now,true);
+ const decision=orchestrateReadiness(registry,now,executionEnabled);
  const states=realitySubjects.map(subject=>registry.resolve(subject,now));
  const verified=states.filter(x=>x.state==='VERIFIED').length;
  const next=decision.nextProbe?.subject ?? null;
@@ -91,6 +93,7 @@ function SetupPage(){
 
  return <><Header title="UK Reality Check"/><main>
   <section className="setup-hero"><Settings2/><div><h2>EXP-001 launch checklist</h2><p>UI is now a projection of the evidence registry. No evidence means UNKNOWN.</p></div></section>
+  <section className="card"><div className="money-line"><span>Execution readiness switch</span><button onClick={()=>{const next=!executionEnabled;if(typeof window!=='undefined')writeExecutionEnabled(window.localStorage,next);setExecutionEnabled(next)}}>{executionEnabled?'ENABLED':'SAFE MODE'}</button></div><p className="muted">Defaults OFF. Enabling only permits readiness evaluation; publishing and other external effects still require policy and human approval.</p></section>
   <section className="card readiness-card"><div className="readiness-top"><div><small>VERIFIED REALITY</small><h2>{verified}/{realitySubjects.length}</h2></div><Pill tone={tone}>{decision.launch.readiness}</Pill></div><div className="progress"><i style={{width:`${Math.round((verified/realitySubjects.length)*100)}%`}}/></div></section>
   {next==='REAL_PRODUCT'&&<section className="next-proof product-intake"><small>REAL PRODUCT · UK</small><h3>Capture one real affiliate listing</h3><p>Enter only facts observed on the current TikTok listing. Registration does not make it a winner.</p><div className="product-fields"><input placeholder="Product/listing ID" value={productDraft.productId} onChange={e=>setProductDraft({...productDraft,productId:e.target.value})}/><input placeholder="Listing reference / URL" value={productDraft.listingRef} onChange={e=>setProductDraft({...productDraft,listingRef:e.target.value})}/><input placeholder="Product name" value={productDraft.productName} onChange={e=>setProductDraft({...productDraft,productName:e.target.value})}/><input placeholder="Seller name" value={productDraft.sellerName} onChange={e=>setProductDraft({...productDraft,sellerName:e.target.value})}/><input inputMode="decimal" placeholder="Price GBP" value={productDraft.priceGbp} onChange={e=>setProductDraft({...productDraft,priceGbp:e.target.value})}/><input inputMode="decimal" placeholder="Commission %" value={productDraft.commissionRate} onChange={e=>setProductDraft({...productDraft,commissionRate:e.target.value})}/></div><button className="primary" onClick={captureProduct}>Capture product evidence</button>{realProduct&&<p className="captured">Captured: {realProduct.productName} · £{realProduct.priceGbp} · {(realProduct.commissionRate*100).toFixed(1)}%</p>}</section>}
   {next&&next!=='REAL_PRODUCT'&&decision.nextProbe&&(()=>{const step=buildOnboardingStep(decision.nextProbe);return <section className="next-proof"><small>NEXT PROOF · TIER {decision.nextProbe.dependencyTier}</small><h3>{step.title}</h3><p>{step.instruction}</p><label className="evidence-field"><span>Evidence reference</span><input value={reference} onChange={e=>setReference(e.target.value)} placeholder={step.referenceHint}/><small>Record where you observed the status. Never paste passwords, tokens, identity document numbers or bank details.</small></label><div className="evidence-actions"><button disabled={reference.trim().length<6} onClick={()=>record(next,'VERIFIED')}><Check/> Verified</button><button disabled={reference.trim().length<6} onClick={()=>record(next,'BLOCKED')}><X/> Blocked</button></div></section>})()}
