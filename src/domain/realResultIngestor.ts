@@ -36,7 +36,6 @@ function validate(input: RealResultInput) {
 
 export class RealResultIngestor {
   private readonly ledger:ActionEventLedger;
-  private readonly evidenceByEventKey = new Map<string, string>();
   constructor(store?:BusinessTruthStore){this.ledger=new ActionEventLedger(store)}
 
   ingest(input: RealResultInput): RealResultReceipt {
@@ -52,16 +51,15 @@ export class RealResultIngestor {
       type: input.type,
       occurredAt: input.occurredAt,
       amountGbp: input.amountGbp,
+      evidenceRef: input.evidenceRef,
     });
-
-    if (!recorded.duplicate) this.evidenceByEventKey.set(key, input.evidenceRef);
 
     return {
       accepted: true,
       duplicate: recorded.duplicate,
       event: recorded.record,
       reward: resolveReward(this.ledger.eventsForExperiment(input.experimentId)),
-      evidenceRef: this.evidenceByEventKey.get(key)!,
+      evidenceRef: recorded.record.evidenceRef ?? input.evidenceRef,
     };
   }
 
