@@ -1,3 +1,4 @@
+import type { BusinessTruthStore } from './businessTruthStore';
 export type ActionStatus = 'PROPOSED' | 'APPROVED' | 'EXECUTING' | 'SUCCEEDED' | 'FAILED' | 'UNKNOWN';
 export type EventType =
   | 'PUBLISHED' | 'IMPRESSION' | 'CLICK' | 'ORDER_CREATED'
@@ -26,6 +27,12 @@ export type CommerceEvent = {
 export class ActionEventLedger {
   private actionsByIdempotency = new Map<string, ActionRecord>();
   private eventsBySourceKey = new Map<string, CommerceEvent>();
+  constructor(private readonly store?:BusinessTruthStore){
+    const snapshot=store?.load();
+    snapshot?.actions.forEach(a=>this.actionsByIdempotency.set(a.idempotencyKey,structuredClone(a)));
+    snapshot?.events.forEach(e=>this.eventsBySourceKey.set(`${e.source}::${e.externalEventId}`,structuredClone(e)));
+  }
+  private persist(){this.store?.save({actions:[...this.actionsByIdempotency.values()],events:[...this.eventsBySourceKey.values()]})}
 
   recordAction(action: ActionRecord): { record: ActionRecord; duplicate: boolean } {
     if (!action.actionId || !action.decisionId || !action.experimentId || !action.idempotencyKey) {
@@ -34,6 +41,7 @@ export class ActionEventLedger {
     const existing = this.actionsByIdempotency.get(action.idempotencyKey);
     if (existing) return { record: structuredClone(existing), duplicate: true };
     this.actionsByIdempotency.set(action.idempotencyKey, structuredClone(action));
+    this.persist();
     return { record: structuredClone(action), duplicate: false };
   }
 
@@ -48,6 +56,7 @@ export class ActionEventLedger {
     const existing = this.eventsBySourceKey.get(key);
     if (existing) return { record: structuredClone(existing), duplicate: true };
     this.eventsBySourceKey.set(key, structuredClone(event));
+    this.persist();
     return { record: structuredClone(event), duplicate: false };
   }
 
