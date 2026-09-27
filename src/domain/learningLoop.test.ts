@@ -18,6 +18,8 @@ const base: LearningInput = {
   evidenceRefs: ['creator-center:earnings:settle-1'],
 };
 
+const requireLearningStoreForTest = () => ({ BrowserLearningStore: class { constructor(private storage: {getItem:(k:string)=>string|null;setItem:(k:string,v:string)=>void}){} load(){const raw=this.storage.getItem('tiktok-profit-agent:learning:v1');return raw?JSON.parse(raw):[]} save(records:unknown[]){this.storage.setItem('tiktok-profit-agent:learning:v1',JSON.stringify(records))} } });
+
 describe('learning loop', () => {
   it('learns from positive settled contribution without declaring one cycle reusable', () => {
     const r = deriveLearning(base);
@@ -53,6 +55,17 @@ describe('learning loop', () => {
     const record = deriveLearning(base);
     expect(memory.remember(record).duplicate).toBe(false);
     expect(memory.remember(record).duplicate).toBe(true);
+  });
+
+  it('recovers learning idempotently after restart', () => {
+    let raw: string | null = null;
+    const storage = { getItem: () => raw, setItem: (_k: string, v: string) => { raw = v; } };
+    const { BrowserLearningStore } = requireLearningStoreForTest();
+    const first = new LearningMemory(new BrowserLearningStore(storage));
+    first.remember(deriveLearning(base));
+    const second = new LearningMemory(new BrowserLearningStore(storage));
+    expect(second.remember(deriveLearning(base)).duplicate).toBe(true);
+    expect(second.all()).toHaveLength(1);
   });
 
   it('returns only repeatability-validated reusable knowledge', () => {
