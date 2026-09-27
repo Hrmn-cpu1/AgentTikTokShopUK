@@ -40,9 +40,17 @@ function SetupPage(){
  const overall=resolveEligibility(eligibility);
  const tone=overall==='ELIGIBLE'?'green':overall==='BLOCKED'?'blocked':'yellow';
  const update=(key:EligibilityRequirement)=>setEligibility(current=>({...current,[key]:nextRequirementState(current[key])}));
- return <><Header title="UK Setup"/><main><section className="setup-hero"><Settings2/><div><h2>Money-path eligibility</h2><p>Nothing executes externally until the real UK route is verified.</p></div></section>
- {requirements.map(key=>{const state=eligibility[key];return <button className="check-row" key={key} onClick={()=>update(key)}><span className={'check '+(state==='VERIFIED'?'yes':state==='BLOCKED'?'blocked':'')}>{state==='VERIFIED'?<Check/>:<X/>}</span><div><b>{eligibilityLabels[key]}</b><small>{state} · tap to change</small></div></button>})}
- <section className={'eligibility '+tone}><ShieldCheck/><div><small>OVERALL STATUS</small><h2>{overall}</h2></div></section>
- <p className="muted">{overall==='ELIGIBLE'?'Eligibility gate permits external execution; policy and human approval still apply.':'External execution is fail-closed. Research, simulation and creative preparation remain available.'}</p>
- <p className="muted">V0 stores status only. Identity documents and bank credentials stay with TikTok/payment providers.</p></main></>}
+ const unresolved=requirements.filter(key=>eligibility[key]!=='VERIFIED');
+ const next=unresolved[0];
+ const verified=requirements.length-unresolved.length;
+ return <><Header title="UK Reality Check"/><main>
+  <section className="setup-hero"><Settings2/><div><h2>EXP-001 launch checklist</h2><p>Verify reality from your phone. No document, password or bank credential is stored here.</p></div></section>
+  <section className="card readiness-card"><div className="readiness-top"><div><small>VERIFIED REALITY</small><h2>{verified}/{requirements.length}</h2></div><Pill tone={overall==='ELIGIBLE'?'green':overall==='BLOCKED'?'blocked':'yellow'}>{overall}</Pill></div><div className="progress"><i style={{width:`${Math.round((verified/requirements.length)*100)}%`}}/></div></section>
+  {next&&overall!=='BLOCKED'&&<section className="next-proof"><small>NEXT PROOF</small><h3>{eligibilityLabels[next]}</h3><p>Check this directly in the relevant TikTok/account screen, then record only the status and a safe reference.</p><button className="primary" onClick={()=>update(next)}><ShieldCheck/> Record verification state</button></section>}
+  {requirements.map((key,index)=>{const state=eligibility[key];return <button className={'check-row '+(key===next?'current':'')} key={key} onClick={()=>update(key)}><span className={'step-no '+(state==='VERIFIED'?'done':state==='BLOCKED'?'blocked':'')}>{state==='VERIFIED'?<Check/>:index+1}</span><div className="grow"><b>{eligibilityLabels[key]}</b><small>{state==='UNKNOWN'?'Evidence required':state==='VERIFIED'?'Evidence recorded':'Resolve blocker before launch'}</small></div><Pill tone={state==='VERIFIED'?'green':state==='BLOCKED'?'blocked':'yellow'}>{state}</Pill></button>})}
+  <section className={'eligibility '+tone}><ShieldCheck/><div><small>LAUNCH GATE</small><h2>{overall==='ELIGIBLE'?'READY FOR POLICY CHECK':overall}</h2></div></section>
+  <p className="muted">{overall==='ELIGIBLE'?'Reality prerequisites are verified. Policy, human approval and the execution kill switch still control publication.':'EXP-001 remains fail-closed. Resolve the highlighted evidence path before external execution.'}</p>
+  <p className="muted">Tap states only after checking reality. V0 stores status/reference only; identity documents, payout credentials and secrets remain outside the agent.</p>
+ </main></>
+}
 export default function App(){const [page,setPage]=useState<Page>('home');let body=page==='home'?<HomePage go={setPage}/>:page==='radar'?<RadarPage go={setPage}/>:page==='opportunity'?<OpportunityPage go={setPage}/>:page==='tests'?<TestsPage/>:page==='money'?<MoneyPage/>:<SetupPage/>;return <div className="app">{body}{page!=='setup'&&page!=='opportunity'&&<Nav page={page} setPage={setPage}/>}<button className="bot" aria-label="Agent assistant"><Bot/></button></div>}
