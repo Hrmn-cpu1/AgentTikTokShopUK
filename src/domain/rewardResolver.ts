@@ -11,6 +11,8 @@ export type RewardResolution = {
   maturity: RewardMaturity;
   proxyReward: number | null;
   settledCommissionGbp: number;
+  grossSettledCommissionGbp: number;
+  refundedAmountGbp: number;
   refunded: boolean;
   economicTruthKnown: boolean;
 };
@@ -35,7 +37,8 @@ function eventStage(event: CommerceEvent): RewardStage {
 
 export function resolveReward(events: CommerceEvent[]): RewardResolution {
   let stage: RewardStage = 'NO_SIGNAL';
-  let settledCommissionGbp = 0;
+  let grossSettledCommissionGbp = 0;
+  let refundedAmountGbp = 0;
   let impressions = 0;
   let clicks = 0;
   let orders = 0;
@@ -47,11 +50,13 @@ export function resolveReward(events: CommerceEvent[]): RewardResolution {
     if (event.type === 'IMPRESSION') impressions += 1;
     if (event.type === 'CLICK') clicks += 1;
     if (event.type === 'ORDER_CREATED') orders += 1;
-    if (event.type === 'COMMISSION_SETTLED') settledCommissionGbp += event.amountGbp ?? 0;
-    if (event.type === 'REFUNDED') refunded = true;
+    if (event.type === 'COMMISSION_SETTLED') grossSettledCommissionGbp += event.amountGbp ?? 0;
+    if (event.type === 'REFUNDED') { refunded = true; refundedAmountGbp += event.amountGbp ?? 0; }
   }
 
-  settledCommissionGbp = Math.round(settledCommissionGbp * 100) / 100;
+  grossSettledCommissionGbp = Math.round(grossSettledCommissionGbp * 100) / 100;
+  refundedAmountGbp = Math.round(refundedAmountGbp * 100) / 100;
+  const settledCommissionGbp=Math.max(0,Math.round((grossSettledCommissionGbp-refundedAmountGbp)*100)/100);
 
   const proxyReward =
     orders > 0 ? orders :
@@ -62,19 +67,19 @@ export function resolveReward(events: CommerceEvent[]): RewardResolution {
   if (refunded) {
     return {
       stage: 'REFUND', maturity: 'FINAL', proxyReward,
-      settledCommissionGbp, refunded: true, economicTruthKnown: true,
+      settledCommissionGbp, grossSettledCommissionGbp, refundedAmountGbp, refunded: true, economicTruthKnown: true,
     };
   }
 
   if (settledCommissionGbp > 0 || events.some((event) => event.type === 'COMMISSION_SETTLED')) {
     return {
       stage: 'SETTLEMENT', maturity: 'FINAL', proxyReward,
-      settledCommissionGbp, refunded: false, economicTruthKnown: true,
+      settledCommissionGbp, grossSettledCommissionGbp, refundedAmountGbp, refunded: false, economicTruthKnown: true,
     };
   }
 
   if (stage === 'DELIVERY') {
-    return { stage, maturity: 'MATURE', proxyReward, settledCommissionGbp: 0, refunded: false, economicTruthKnown: false };
+    return { stage, maturity: 'MATURE', proxyReward, settledCommissionGbp: 0, grossSettledCommissionGbp:0, refundedAmountGbp:0, refunded: false, economicTruthKnown: false };
   }
   if (stage === 'ORDER') {
     return { stage, maturity: 'PARTIAL', proxyReward, settledCommissionGbp: 0, refunded: false, economicTruthKnown: false };
