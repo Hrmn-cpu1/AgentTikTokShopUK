@@ -7,6 +7,7 @@ import { BrowserRealityEvidenceStore, hydrateRealityRegistry, persistRealityEvid
 import { buildOnboardingStep, validateEvidenceReference } from './domain/realityOnboarding';
 import { ingestRealProduct, type RealProductRecord } from './domain/realProductIntake';
 import { readExecutionEnabled, writeExecutionEnabled } from './domain/realityCutoverGuard';
+import { loadRealProduct, saveRealProduct } from './domain/realProductStore';
 
 type Page = 'home'|'radar'|'opportunity'|'tests'|'money'|'setup';
 const products = [
@@ -33,7 +34,7 @@ function HomePage({go}:{go:(p:Page)=>void}){
  <button className="setup-link" onClick={()=>go('setup')}><ShieldCheck/> UK money-path setup <ChevronRight/></button>
  </main></>
 }
-function RadarPage({go}:{go:(p:Page)=>void}){return <><Header title="UK Product Radar"/><main><div className="demo">DEMO OPPORTUNITIES</div><div className="filters"><button className="selected">Top score</button><button>Commission</button><button>Confidence</button><button>Cash velocity</button></div>{products.map((p,n)=><article className="product radar-card" key={p.id} onClick={()=>go('opportunity')}><div className="thumb">{p.emoji}</div><div className="grow"><div className="row"><Pill>#{n+1}</Pill><Pill tone="green">{p.trend}</Pill></div><h3>{p.name}</h3><p>{p.cat}</p><div className="radar-metrics"><Metric label="Price" value={'£'+p.price}/><Metric label="Commission" value={p.commission+'%'}/><Metric label="Score" value={String(p.score)}/></div><div className="progress"><i style={{width:p.confidence+'%'}}/></div><small>Confidence {p.confidence}% · expected +£{p.profit.toFixed(2)}</small></div></article>)}</main></>}
+function RadarPage({go}:{go:(p:Page)=>void}){const real=typeof window!=='undefined'?loadRealProduct(window.localStorage):null;return <><Header title="UK Product Radar"/><main><div className="demo">REAL PRODUCT EVIDENCE · NO DEMO RANKING</div>{!real?<article className="empty"><Radar/><div><b>No real product captured</b><p>Complete UK Reality Check and capture one current TikTok Shop listing first.</p></div></article>:<article className="product radar-card" onClick={()=>go('opportunity')}><div className="thumb">🛍️</div><div className="grow"><Pill tone="green">REAL</Pill><h3>{real.productName}</h3><p>{real.sellerName} · {real.source}</p><div className="radar-metrics"><Metric label="Price" value={'£'+real.priceGbp.toFixed(2)}/><Metric label="Commission" value={(real.commissionRate*100).toFixed(1)+'%'}/><Metric label="Availability" value={real.available?'YES':'NO'}/></div><small>Observed {new Date(real.observedAt).toLocaleString()} · score remains UNKNOWN until evidence inputs are complete.</small></div></article>}</main></>}
 function OpportunityPage({go}:{go:(p:Page)=>void}){const p=products[0];return <><Header title="Opportunity"/><main><button className="back" onClick={()=>go('radar')}>‹ UK Radar</button><section className="op-head"><div className="thumb big">{p.emoji}</div><div><Pill>Score {p.score}</Pill><h2>{p.name}</h2><p>{p.cat} · UK</p></div></section><div className="grid3"><Metric label="Price" value="£24.99"/><Metric label="Commission" value="18%"/><Metric label="Est./order" value="£4.50"/></div>
  <section className="card"><h3>💷 Economic hypothesis</h3><div className="money-line"><span>Expected realized contribution</span><strong>+£31.20</strong></div><div className="money-line"><span>Confidence</span><b>74%</b></div><div className="money-line"><span>Expected time-to-cash</span><b>~4 days</b></div><div className="money-line"><span>Capital required</span><b>£0–£8</b></div></section>
  <section className="card"><h3>🤖 Opportunity Analyst</h3><p>High demonstrability and meaningful commission create a testable commerce hypothesis. Seller, return rate and current supply still require direct evidence before execution.</p><div className="tags"><Pill tone="green">Demo-friendly</Pill><Pill tone="yellow">Supply unknown</Pill><Pill tone="yellow">Returns unknown</Pill></div></section>
@@ -88,6 +89,7 @@ function SetupPage(){
    available:true,source:'MANUAL_VERIFIED',
   });
   setRealProduct(product);
+  if(typeof window!=='undefined') saveRealProduct(window.localStorage,product);
   setReference(product.listingRef);
  };
 
