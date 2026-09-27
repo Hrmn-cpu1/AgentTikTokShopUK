@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { deriveLearning, LearningMemory, type LearningInput } from './learningLoop';
+import { deriveLearning, LearningMemory, BrowserLearningStore, type LearningInput } from './learningLoop';
 
 const diagnosis = {
   winnerStage: 'PROFIT_VALIDATED',
@@ -55,6 +55,13 @@ describe('learning loop', () => {
     const record = deriveLearning(base);
     expect(memory.remember(record).duplicate).toBe(false);
     expect(memory.remember(record).duplicate).toBe(true);
+    expect(() => memory.remember({ ...record, realizedContributionGbp: 7 })).toThrow('Conflicting learning identity');
+  });
+
+  it('rejects corrupted persisted learning instead of starting fresh', () => {
+    const raw=JSON.stringify([{...deriveLearning(base),outcome:'PROFIT',realizedContributionGbp:null}]);
+    expect(() => new LearningMemory(new BrowserLearningStore({getItem:()=>raw,setItem:()=>{}}))).toThrow();
+    expect(() => new BrowserLearningStore({getItem:()=>'{bad',setItem:()=>{}}).load()).toThrow();
   });
 
   it('recovers learning idempotently after restart', () => {

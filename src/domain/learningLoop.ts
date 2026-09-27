@@ -80,16 +80,32 @@ export function deriveLearning(input: LearningInput): LearningRecord {
 
 export interface LearningStore{load():LearningRecord[];save(records:LearningRecord[]):void}
 export const LEARNING_STORAGE_KEY='tiktok-profit-agent:learning:v1';
-export class BrowserLearningStore implements LearningStore{constructor(private readonly storage:Pick<Storage,'getItem'|'setItem'>){}load(){const raw=this.storage.getItem(LEARNING_STORAGE_KEY);if(!raw)return [];try{const x=JSON.parse(raw);return Array.isArray(x)?x:[]}catch{return []}}save(records:LearningRecord[]){this.storage.setItem(LEARNING_STORAGE_KEY,JSON.stringify(records))}}
+function assertLearning(value:unknown):asserts value is LearningRecord{
+ const r=value as LearningRecord;
+ if(!r||typeof r.learningId!=='string'||!r.learningId.trim()||!r.trace||
+  [r.trace.decisionId,r.trace.experimentId,r.trace.opportunityId,r.trace.creativeId].some(id=>typeof id!=='string'||!id.trim())||
+  r.market!=='UK'||!['PROFIT','LOSS','BREAK_EVEN','REFUND','IMMATURE'].includes(r.outcome)||
+  !(r.realizedContributionGbp===null||(typeof r.realizedContributionGbp==='number'&&Number.isFinite(r.realizedContributionGbp)))||
+  (r.outcome==='PROFIT'&&(r.realizedContributionGbp===null||r.realizedContributionGbp<=0))||
+  !Array.isArray(r.evidenceRefs)||!r.evidenceRefs.length||r.evidenceRefs.some(ref=>typeof ref!=='string'||!ref.trim())||
+  typeof r.reusable!=='boolean'||(r.reusable&&(r.outcome!=='PROFIT'||r.winnerStage!=='REPEATABILITY_VALIDATED')))
+  throw new Error('Invalid persisted learning record');
+}
+function assertLearnings(value:unknown):asserts value is LearningRecord[]{
+ if(!Array.isArray(value))throw new Error('Corrupted learning store');
+ const ids=new Set<string>();for(const record of value){assertLearning(record);if(ids.has(record.learningId))throw new Error('Duplicate persisted learning identity');ids.add(record.learningId)}
+}
+export class BrowserLearningStore implements LearningStore{constructor(private readonly storage:Pick<Storage,'getItem'|'setItem'>){}load(){const raw=this.storage.getItem(LEARNING_STORAGE_KEY);if(!raw)return [];const x:unknown=JSON.parse(raw);assertLearnings(x);return structuredClone(x)}save(records:LearningRecord[]){assertLearnings(records);this.storage.setItem(LEARNING_STORAGE_KEY,JSON.stringify(records))}}
 export class LearningMemory {
   private readonly records = new Map<string, LearningRecord>();
-  constructor(private readonly store?:LearningStore){for(const r of store?.load()??[])this.records.set(r.learningId,structuredClone(r))}
+  constructor(private readonly store?:LearningStore){const loaded=store?.load()??[];assertLearnings(loaded);for(const r of loaded)this.records.set(r.learningId,structuredClone(r))}
 
   remember(record: LearningRecord): { record: LearningRecord; duplicate: boolean } {
+    assertLearning(record);
     const existing = this.records.get(record.learningId);
-    if (existing) return { record: structuredClone(existing), duplicate: true };
+    if (existing){if(JSON.stringify(existing)!==JSON.stringify(record))throw new Error('Conflicting learning identity');return { record: structuredClone(existing), duplicate: true }}
     this.records.set(record.learningId, structuredClone(record));
-    this.store?.save([...this.records.values()].map(r=>structuredClone(r)));
+    try{this.store?.save([...this.records.values()].map(r=>structuredClone(r)))}catch(error){this.records.delete(record.learningId);throw error}
     return { record: structuredClone(record), duplicate: false };
   }
 
