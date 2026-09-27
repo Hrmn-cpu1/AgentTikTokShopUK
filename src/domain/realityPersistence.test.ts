@@ -27,4 +27,14 @@ describe('reality persistence',()=>{
   const r=hydrateRealityRegistry(new BrowserRealityEvidenceStore(s));
   expect(r.resolve('AFFILIATE_ACCESS','2026-09-27T18:00:00Z').state).toBe('UNKNOWN');
  });
+
+  it('preserves original provenance across persistence and hydration',()=>{
+    const original={evidenceId:'ev-prov-1',subject:'AFFILIATE_ACCESS' as const,state:'VERIFIED' as const,source:'TIKTOK_OFFICIAL' as const,observedAt:'2026-09-27T01:00:00Z',validUntil:'2026-09-28T01:00:00Z',reference:'official-screen:affiliate-access',containsSensitiveData:false as const};
+    const memory:{raw:string|null}={raw:null};
+    const store=new BrowserRealityEvidenceStore({getItem:()=>memory.raw,setItem:(_k,v)=>{memory.raw=v}});
+    const registry=new RealityEvidenceRegistry(); registry.record(original);
+    persistRealityEvidence(store,registry.allEvidence());
+    const recovered=hydrateRealityRegistry(store);
+    expect(recovered.allEvidence()).toEqual([original]);
+  });
 });
