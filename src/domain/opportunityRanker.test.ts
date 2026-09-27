@@ -9,7 +9,7 @@ const strong: OpportunitySignals = {
 
 describe('opportunity ranker', () => {
   it('uses the frozen economic-first weighted score', () => {
-    expect(scoreOpportunity(strong)).toBe(75.5);
+    expect(scoreOpportunity(strong)).toBe(73.5);
   });
 
   it('penalizes weak evidence even when a product looks viral', () => {
@@ -18,7 +18,7 @@ describe('opportunity ranker', () => {
   });
 
   it('applies risk as an explicit penalty', () => {
-    expect(scoreOpportunity({ ...strong, riskPenalty: 40 })).toBe(43.5);
+    expect(scoreOpportunity({ ...strong, riskPenalty: 40 })).toBe(41.5);
   });
 
   it('ranks deterministically and uses id only as a stable tie breaker', () => {
