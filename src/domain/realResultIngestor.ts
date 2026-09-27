@@ -1,5 +1,6 @@
 import { ActionEventLedger, type CommerceEvent, type EventType } from './actionEventLedger';
 import { resolveReward } from './rewardResolver';
+import type { BusinessTruthStore } from './businessTruthStore';
 
 export type RealResultInput = {
   source: 'TIKTOK_CREATOR_CENTER' | 'MANUAL_VERIFIED';
@@ -34,8 +35,9 @@ function validate(input: RealResultInput) {
 }
 
 export class RealResultIngestor {
-  private readonly ledger = new ActionEventLedger();
+  private readonly ledger:ActionEventLedger;
   private readonly evidenceByEventKey = new Map<string, string>();
+  constructor(store?:BusinessTruthStore){this.ledger=new ActionEventLedger(store)}
 
   ingest(input: RealResultInput): RealResultReceipt {
     validate(input);
