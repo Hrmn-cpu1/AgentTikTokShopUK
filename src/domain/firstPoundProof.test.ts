@@ -9,7 +9,7 @@ const trace=(settled:number|null,cost=0,executable=true):DecisionMoneyTrace=>({d
 describe('first pound proof',()=>{
  it('proves positive realized contribution after settlement',()=>{const p=proveFirstPound(trace(4.25,1),publication,['settlement-proof'],'2026-09-28T21:00:00Z');expect(p.status).toBe('PROVEN');expect(p.realizedContributionGbp).toBe(3.25)});
  it('does not prove money from an order without settlement',()=>expect(proveFirstPound(trace(null),publication,['order-proof'],'2026-09-28T21:00:00Z').status).toBe('NOT_PROVEN'));
- it('does not prove break-even settlement',()=>expect(proveFirstPound(trace(1,1),publication,['settlement-proof'],'2026-09-28T21:00:00Z').status).toBe('NOT_PROVEN'));
+ it('does not call sub-pound positive contribution the first pound',()=>{const p=proveFirstPound(trace(0.75,0),publication,['settlement-proof'],'2026-09-28T21:00:00Z');expect(p.status).toBe('NOT_PROVEN');expect(p.positiveContributionProven).toBe(true)});\n it('does not prove break-even settlement',()=>expect(proveFirstPound(trace(1,1),publication,['settlement-proof'],'2026-09-28T21:00:00Z').status).toBe('NOT_PROVEN'));
  it('does not prove a loss despite settled commission',()=>expect(proveFirstPound(trace(1,2),publication,['settlement-proof'],'2026-09-28T21:00:00Z').status).toBe('NOT_PROVEN'));
  it('requires executable decision truth',()=>expect(proveFirstPound(trace(4.25,0,false),publication,['settlement-proof'],'2026-09-28T21:00:00Z').status).toBe('NOT_PROVEN'));
  it('rejects cross-experiment publication trace',()=>expect(()=>proveFirstPound(trace(4.25),{...publication,experimentId:'EXP-002'},['proof'],'2026-09-28T21:00:00Z')).toThrow());
