@@ -14,6 +14,7 @@ const HINTS: Record<RealitySubject,string> = {
  IDENTITY_KYC:'e.g. TikTok UI > verification status screen (status only)',
  AFFILIATE_ACCESS:'e.g. Creator Center > Affiliate Center access screen',
  PAYOUT_METHOD:'e.g. TikTok earnings/payout status screen (no bank details)',
+ ACCOUNT_RISK:'e.g. TikTok account standing/status screen showing current restrictions or good standing',
  REAL_PRODUCT:'e.g. TikTok Shop UK product listing URL or listing ID',
  PRODUCT_FRESHNESS:'e.g. listing rechecked at timestamp',
  SUPPLY:'e.g. current listing availability/seller screen',
@@ -24,7 +25,7 @@ const HINTS: Record<RealitySubject,string> = {
 };
 const TITLES: Record<RealitySubject,string> = {
  UK_ACCOUNT_ELIGIBILITY:'Verify UK account eligibility', IDENTITY_KYC:'Verify identity/KYC status',
- AFFILIATE_ACCESS:'Verify Affiliate access', PAYOUT_METHOD:'Verify payout readiness',
+ AFFILIATE_ACCESS:'Verify Affiliate access', PAYOUT_METHOD:'Verify payout readiness', ACCOUNT_RISK:'Verify current account risk status',
  REAL_PRODUCT:'Select one real UK product', PRODUCT_FRESHNESS:'Re-check product freshness',
  SUPPLY:'Verify product supply', CREATIVE_APPROVAL:'Approve EXP-001 creative',
  PRODUCT_CLAIMS:'Verify ProductTruth claims', CAPITAL_BOUND:'Confirm capital bound', LOSS_BOUND:'Confirm loss bound',
