@@ -22,17 +22,18 @@ object SignatureUtils {
         val packageManager = context.packageManager
         val signatureList: List<String> = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
             val sig = packageManager.getPackageInfo(pkgName, PackageManager.GET_SIGNING_CERTIFICATES).signingInfo
+                ?: return emptyList()
             if (sig.hasMultipleSigners()) {
-                sig.apkContentsSigners.map {
+                sig.apkContentsSigners.orEmpty().map {
                     it.toCharsString()
                 }
             } else {
-                sig.signingCertificateHistory.map {
+                sig.signingCertificateHistory.orEmpty().map {
                     it.toCharsString()
                 }
             }
         } else {
-            val sig = packageManager.getPackageInfo(pkgName, PackageManager.GET_SIGNATURES).signatures
+            val sig = packageManager.getPackageInfo(pkgName, PackageManager.GET_SIGNATURES).signatures.orEmpty()
             sig.map {
                 it.toCharsString()
             }
@@ -44,17 +45,18 @@ object SignatureUtils {
         val packageManager = context.packageManager
         val signatureList: List<String> = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
             val sig = packageManager.getPackageInfo(pkgName, PackageManager.GET_SIGNING_CERTIFICATES).signingInfo
+                ?: return ""
             if (sig.hasMultipleSigners()) {
-                sig.apkContentsSigners.map {
+                sig.apkContentsSigners.orEmpty().map {
                     it.hashBy256()
                 }
             } else {
-                sig.signingCertificateHistory.map {
+                sig.signingCertificateHistory.orEmpty().map {
                     it.hashBy256()
                 }
             }
         } else {
-            val sig = packageManager.getPackageInfo(pkgName, PackageManager.GET_SIGNATURES).signatures
+            val sig = packageManager.getPackageInfo(pkgName, PackageManager.GET_SIGNATURES).signatures.orEmpty()
             sig.map {
                 it.hashBy256()
             }
