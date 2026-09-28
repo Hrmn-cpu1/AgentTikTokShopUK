@@ -76,7 +76,8 @@ class LearningInput(BaseModel):
 
 
 def create_app(database_url: str | None = None, operator_token: str | None = None,
-               *, tiktok_provider=None, operator_login_secret=None, token_encryption_key=None) -> FastAPI:
+               *, tiktok_provider=None, operator_login_secret=None, token_encryption_key=None,
+               trend_source=None) -> FastAPI:
     url = database_url or os.environ.get("DATABASE_URL")
     if url and url.startswith('postgresql://'):
         url = 'postgresql+psycopg://' + url[len('postgresql://'):]
@@ -108,7 +109,7 @@ def create_app(database_url: str | None = None, operator_token: str | None = Non
                 raise HTTPException(status_code=403, detail="Active TikTok identity and current manual authority required")
 
     add_governance_routes(app, engine, require_operator, require_manual_authority)
-    add_growth_routes(app, engine, require_operator)
+    add_growth_routes(app, engine, require_operator, trend_source=trend_source)
 
     @app.post('/v1/creator-video', dependencies=[Depends(require_operator)])
     async def creator_video(photo: UploadFile = File(...), headline: str = Form(...),

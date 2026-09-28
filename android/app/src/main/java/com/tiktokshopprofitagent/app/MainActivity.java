@@ -7,6 +7,7 @@ public class MainActivity extends BridgeActivity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         registerPlugin(TikTokLoginPlugin.class);
+        registerPlugin(TikTokSharePlugin.class);
         super.onCreate(savedInstanceState);
     }
 }

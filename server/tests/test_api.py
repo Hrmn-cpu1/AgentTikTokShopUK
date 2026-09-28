@@ -95,6 +95,37 @@ def test_auth_and_missing_publication_fail_closed(database):
     assert c.post("/v1/events", json=event("REFUNDED", "refund-1")).status_code == 422
 
 
+def test_public_trend_to_original_mp4_is_idempotent_and_does_not_claim_delivery(database):
+    from server.trend_sources import TrendEvidence
+    now = datetime.now(timezone.utc)
+    class FixtureTrendSource:
+        def collect(self):
+            return [TrendEvidence("gtr-br-test-first-run", "tema em alta", "PUBLIC_FIXTURE_RSS",
+                "https://example.test/public-rss", "BR", "BR_SIGNAL", "UNKNOWN", now, now,
+                {"google_approx_traffic_raw":"2,000+", "views":None, "likes":None, "comments":None, "shares":None},
+                "public fixture evidence; not TikTok metrics")]
+    app = create_app(database, TOKEN, trend_source=FixtureTrendSource())
+    c = TestClient(app, headers={"Authorization": f"Bearer {TOKEN}"})
+    first = c.post("/v1/growth/run")
+    assert first.status_code == 200, first.text
+    payload = first.json()
+    assert payload["source"] == "PUBLIC_FIXTURE_RSS"
+    assert payload["market"] == "BR" and payload["languageSignal"] == "UNKNOWN"
+    assert payload["selected"]["components"]["engagement_rate"] is None
+    assert payload["plan"]["assetPlan"]["visuals"].startswith("original")
+    assert payload["delivery"]["status"] == "NOT_SENT"
+    retry = c.post("/v1/growth/run")
+    assert retry.status_code == 200 and retry.json()["duplicate"] is True
+    media = c.get(payload["videoUrl"])
+    assert media.status_code == 200 and media.headers["content-type"].startswith("video/mp4")
+    assert len(media.content) > 1000
+    assert media.headers["x-delivery-state"] == "LOCAL_RENDERED"
+    from server.growth_models import GrowthCreative
+    with Session(create_engine(database)) as session:
+        creative = session.get(GrowthCreative, payload["creativeId"])
+        assert creative.state == "READY" and creative.media_hash == media.headers["x-creative-sha256"]
+
+
 def test_restart_exact_retry_conflict_and_refund_revocation(database):
     c = client(database)
     assert c.post("/v1/experiments", json=experiment()).json()["duplicate"] is False

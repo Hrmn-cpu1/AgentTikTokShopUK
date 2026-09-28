@@ -4,6 +4,7 @@ dist/
 .env
 .env.*
 !.env.example
+deliverables/
 __pycache__/
 .pytest_cache/
 .venv/
