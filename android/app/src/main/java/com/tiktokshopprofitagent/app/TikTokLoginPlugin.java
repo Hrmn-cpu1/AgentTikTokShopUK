@@ -28,7 +28,7 @@ public class TikTokLoginPlugin extends Plugin {
         try {
             // Replace stale or abandoned state. A delayed response for it will not match the new state.
             SecureOAuthStateStore.clear(getContext());
-            String verifier = PKCEUtils.generateCodeVerifier();
+            String verifier = PKCEUtils.INSTANCE.generateCodeVerifier();
             JSONObject pending = new JSONObject();
             pending.put("state", state);
             pending.put("codeVerifier", verifier);
