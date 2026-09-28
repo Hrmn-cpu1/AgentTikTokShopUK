@@ -1,6 +1,7 @@
 """Engineering journey with a fake Login Kit provider; no real TikTok or money."""
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
 import pytest
 from alembic import command
@@ -118,6 +119,34 @@ def test_complete_manual_engineering_journey_refund_restart_and_learning(system)
     assert post(recovered,'learning',{'learning_id':'learning-2','experiment_id':'EXP-001'}).json()['contributionGbp']=='0.00'
     assert recovered.get('/v1/portfolio').json()['commercialProof']=='NOT_PROVEN'
     assert recovered.get('/ready').json()['status']=='ready'
+
+
+def test_private_apk_web_login_returns_connected_identity_without_browser_session(system):
+    _, provider, new_client=system
+    app=new_client()
+    assert app.post('/v1/operator/login',json={'access_key':LOGIN}).status_code==200
+    csrf=app.cookies.get('operator_csrf')
+    start=app.post('/v1/tiktok/native-web-intent',headers={'X-CSRF-Token':csrf})
+    assert start.status_code==200
+    authorization=start.json()['authorizationUrl']
+    assert authorization.startswith('https://www.tiktok.com/v2/auth/authorize/')
+    assert 'scope=user.info.basic' in authorization
+    state=parse_qs(urlparse(authorization).query)['state'][0]
+
+    # The external system browser has no Capacitor WebView operator cookie.
+    browser_callback=new_client()
+    response=browser_callback.get('/v1/tiktok/callback',params={'state':state,'code':'valid-code'},
+        follow_redirects=False)
+    assert response.status_code==200
+    assert response.headers['content-type'].startswith('text/html')
+    assert 'Volte ao AgentTikTok Shop' in response.text
+    assert browser_callback.get('/v1/tiktok/callback',params={'state':state,'code':'valid-code'},
+        follow_redirects=False).status_code==403
+    identity=app.get('/v1/tiktok/connection').json()
+    assert identity['connection']['displayName']=='UK Creator'
+    assert identity['capabilities']['IDENTITY']=='AVAILABLE'
+    assert identity['connection']['grantedScopes']==['user.info.basic']
+    assert provider.exchange_verifiers==[None]
 
 
 def test_adversarial_authority_binding_and_idempotency(system):

@@ -1,8 +1,8 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Capacitor } from '@capacitor/core';
 import { App as NativeApp } from '@capacitor/app';
+import { Browser } from '@capacitor/browser';
 import { apiJson as json, operatorCsrf } from './apiClient';
-import { AndroidAuthorization, TikTokLogin } from './tiktokLogin';
 import GrowthStudio from './GrowthStudio';
 
 type Capability = 'AVAILABLE' | 'REQUIRES_APPROVAL' | 'BLOCKED' | 'UNKNOWN';
@@ -24,32 +24,12 @@ export default function ConnectionGate() {
   const [connection,setConnection] = useState<State|null>(null);
   const [accessKey,setAccessKey] = useState('');
   const [message,setMessage] = useState('');
-  const exchangeTask=useRef<Promise<void>|null>(null);
-  const exchangeAndroidAuthorization=(result:AndroidAuthorization)=>{
-    if(exchangeTask.current)return exchangeTask.current;
-    const task=(async()=>{
-      try {
-        await json('/v1/tiktok/android-exchange',{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':operatorCsrf()},
-          body:JSON.stringify({state:result.state,code:result.code,code_verifier:result.codeVerifier})});
-      } finally {
-        await TikTokLogin.completeAuthorization();
-      }
-    })();
-    exchangeTask.current=task;
-    return task.finally(()=>{exchangeTask.current=null});
-  };
   const refresh = async () => {
     try {
       await json('/v1/operator/session');
     } catch (error) {
       if (error instanceof Error && error.message==='Operator session expired') {setPhase('login');return;}
       setMessage(error instanceof Error?error.message:'Servidor indisponível');setPhase('error');return;
-    }
-    if(native){
-      try {
-        const pending=await TikTokLogin.getPendingAuthorization();
-        if(pending.available)await exchangeAndroidAuthorization(pending);
-      }catch(error){setMessage(error instanceof Error?error.message:'Não foi possível concluir o login TikTok');}
     }
     try {setConnection(await json<State>('/v1/tiktok/connection'));setPhase('connection');}
     catch (error) {setMessage(error instanceof Error?error.message:'Servidor indisponível');setPhase('error');}
@@ -72,15 +52,24 @@ export default function ConnectionGate() {
     return ()=>{void Promise.all([back,active]).then(handles=>handles.forEach(handle=>void handle.remove()))};
   },[native,nativeBackendConfigured]);
 
+  useEffect(()=>{
+    if(!native)return;
+    let disposed=false;
+    let browserListener:{remove:()=>Promise<void>}|undefined;
+    void Browser.addListener('browserFinished',()=>{if(!disposed)void refresh()}).then(handle=>{
+      if(disposed)void handle.remove();
+      else browserListener=handle;
+    });
+    return ()=>{disposed=true;if(browserListener)void browserListener.remove()};
+  },[native]);
+
   const startTikTok = async () => {
     setMessage('');
     try {
       if(native){
-        const response=await json<{state:string;clientKey:string;redirectUri:string}>('/v1/tiktok/android-intent',
+        const response=await json<{authorizationUrl:string}>('/v1/tiktok/native-web-intent',
           {method:'POST',headers:{'X-CSRF-Token':operatorCsrf()}});
-        const result=await TikTokLogin.authorize(response);
-        await exchangeAndroidAuthorization(result);
-        await refresh();
+        await Browser.open({url:response.authorizationUrl});
       }else window.location.assign('/v1/tiktok/authorize');
     }catch(error){setMessage(error instanceof Error?error.message:'Autorização do TikTok indisponível')}
   };

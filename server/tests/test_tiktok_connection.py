@@ -43,7 +43,9 @@ class FakeProvider:
         self.exchange_verifiers = []
 
     def authorization_url(self, state):
-        return "https://www.tiktok.com/v2/auth/authorize/?" + f"state={state}&scope=user.info.basic"
+        return "https://www.tiktok.com/v2/auth/authorize/?" + (
+            f"client_key={self.client_key}&scope=user.info.basic&response_type=code&"
+            f"redirect_uri={self.redirect_uri}&state={state}")
 
     def exchange(self, code, code_verifier=None):
         if code != "valid-code":
@@ -261,6 +263,64 @@ def test_android_pkce_exchange_has_one_use_session_bound_state(database):
         session.commit()
     assert app.post("/v1/tiktok/android-exchange",json={**body,"state":another["state"]},
         headers={"X-CSRF-Token":csrf}).status_code==401
+
+
+def test_native_apk_web_login_uses_external_browser_callback_and_one_time_state(database):
+    provider=FakeProvider()
+    app=browser(database,provider)
+    login(app)
+    csrf=app.cookies.get("operator_csrf")
+    assert app.post("/v1/tiktok/native-web-intent").status_code==403
+    start=app.post("/v1/tiktok/native-web-intent",headers={"X-CSRF-Token":csrf})
+    assert start.status_code==200
+    authorize_url=start.json()["authorizationUrl"]
+    query=parse_qs(urlparse(authorize_url).query)
+    state=query["state"][0]
+    assert urlparse(authorize_url).scheme=="https"
+    assert urlparse(authorize_url).netloc=="www.tiktok.com"
+    assert query["scope"]==["user.info.basic"]
+    assert query["redirect_uri"]==[provider.redirect_uri]
+    assert "client_secret" not in authorize_url
+    with Session(create_engine(database)) as session:
+        intent=session.get(TikTokOAuthIntent,sha256(state.encode()).hexdigest())
+        assert intent.platform=="NATIVEWEB"
+        assert intent.consumed_at is None
+
+    # TikTok returns in the external Chrome Custom Tab, which has no WebView cookie.
+    callback_browser=browser(database,provider)
+    callback=callback_browser.get("/v1/tiktok/callback",params={"state":state,"code":"valid-code"},
+        follow_redirects=False)
+    assert callback.status_code==200
+    assert callback.headers["content-type"].startswith("text/html")
+    assert "Volte ao AgentTikTok Shop" in callback.text
+    assert callback_browser.get("/v1/tiktok/callback",params={"state":state,"code":"valid-code"},
+        follow_redirects=False).status_code==403
+    connected=app.get("/v1/tiktok/connection").json()
+    assert connected["connection"]["status"]=="ACTIVE"
+    assert connected["capabilities"]["IDENTITY"]=="AVAILABLE"
+    assert connected["connection"]["grantedScopes"]==["user.info.basic"]
+    assert provider.exchange_verifiers==[None]
+    with Session(create_engine(database)) as session:
+        record=session.scalar(select(TikTokConnection))
+        assert Fernet(ENCRYPTION_KEY).decrypt(record.encrypted_access_token.encode())==b"secret-access"
+        assert Fernet(ENCRYPTION_KEY).decrypt(record.encrypted_refresh_token.encode())==b"secret-refresh"
+
+
+def test_native_apk_web_callback_rejects_expired_operator_session(database):
+    provider=FakeProvider()
+    app=browser(database,provider)
+    login(app)
+    csrf=app.cookies.get("operator_csrf")
+    start=app.post("/v1/tiktok/native-web-intent",headers={"X-CSRF-Token":csrf}).json()
+    state=parse_qs(urlparse(start["authorizationUrl"]).query)["state"][0]
+    with Session(create_engine(database)) as session:
+        intent=session.get(TikTokOAuthIntent,sha256(state.encode()).hexdigest())
+        owner=session.get(OperatorSession,intent.session_hash)
+        owner.expires_at=datetime.now(timezone.utc)-timedelta(seconds=1)
+        session.commit()
+    callback=browser(database,provider).get("/v1/tiktok/callback",params={"state":state,"code":"valid-code"})
+    assert callback.status_code==403
+    assert provider.exchange_verifiers==[]
 
 
 def test_android_assetlinks_is_public_and_accepts_only_certificate_fingerprints(database, monkeypatch):

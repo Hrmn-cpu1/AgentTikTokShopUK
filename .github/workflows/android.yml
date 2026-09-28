@@ -35,6 +35,10 @@ jobs:
           fi
           test -f dist/index.html
           test -f android/app/src/main/AndroidManifest.xml
+          if grep -Fq 'android:path="/v1/tiktok/callback"' android/app/src/main/AndroidManifest.xml; then
+            echo 'HTTPS callback must reach Railway for server-side Web OAuth exchange' >&2
+            exit 1
+          fi
       - run: npx cap sync android
       - name: Build debug APK
         working-directory: android

@@ -10,7 +10,7 @@ from uuid import uuid4
 
 from cryptography.fernet import Fernet
 from fastapi import APIRouter, HTTPException, Request, Response
-from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -244,6 +244,23 @@ def add_connection_routes(app, engine, provider=None, *, login_secret=None, encr
             session.commit()
         return RedirectResponse(service.authorization_url(state), status_code=302)
 
+    @router.post("/v1/tiktok/native-web-intent")
+    def native_web_intent(request: Request):
+        """Start Web Login Kit in an external browser for the private Android APK.
+
+        The browser callback is bound to this authenticated app session by the
+        one-time state record; the external browser does not need the WebView's
+        operator cookie.
+        """
+        service, _ = require_ready()
+        with Session(engine) as session:
+            user_session = operator(request, session, csrf=True)
+            state = secrets.token_urlsafe(48)
+            session.add(TikTokOAuthIntent(state_hash=digest(state), session_hash=user_session.session_hash,
+                expires_at=now_utc() + timedelta(minutes=5), platform="NATIVEWEB"))
+            session.commit()
+        return {"authorizationUrl": service.authorization_url(state)}
+
     @router.post("/v1/tiktok/android-intent")
     def android_intent(request: Request):
         service, _ = require_ready()
@@ -277,16 +294,29 @@ def add_connection_routes(app, engine, provider=None, *, login_secret=None, encr
                 TikTokOAuthIntent.state_hash == digest(state)).with_for_update()) if state else None
             if intent is None or intent.consumed_at or utc(intent.expires_at) <= now_utc():
                 raise HTTPException(403, "Authorization state invalid or expired")
-            if intent.platform != "WEB":
+            if intent.platform not in {"WEB", "NATIVEWEB"}:
                 raise HTTPException(403, "Authorization platform invalid")
-            user_session = operator(request, session)
-            if intent.session_hash != user_session.session_hash:
-                raise HTTPException(403, "Authorization session mismatch")
+            if intent.platform == "WEB":
+                user_session = operator(request, session)
+                if intent.session_hash != user_session.session_hash:
+                    raise HTTPException(403, "Authorization session mismatch")
+            else:
+                # Chrome Custom Tabs do not share Capacitor WebView cookies.
+                # Validate the original app session from the one-time intent.
+                user_session = session.get(OperatorSession, intent.session_hash)
+                if user_session is None or utc(user_session.expires_at) <= now_utc():
+                    raise HTTPException(403, "Authorization session expired")
             intent.consumed_at = now_utc()
             session.commit()  # Consume before external exchange: callback replay cannot duplicate effects.
+            native_web = intent.platform == "NATIVEWEB"
         if error or not code:
             raise HTTPException(400, "TikTok authorization was declined")
         exchange_and_store(service, crypto, code)
+        if native_web:
+            return HTMLResponse("""<!doctype html><html lang="pt-BR"><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>TikTok conectado</title>
+<main style="font:16px system-ui;max-width:34rem;margin:15vh auto;padding:1.5rem">
+<h1>Conta TikTok conectada</h1><p>Volte ao AgentTikTok Shop para concluir.</p></main></html>""")
         return RedirectResponse("/", status_code=303)
 
     @router.post("/v1/tiktok/disconnect")

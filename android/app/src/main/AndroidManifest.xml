@@ -27,16 +27,6 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
 
-            <!-- TikTok Android Login Kit returns the code by HTTPS App Link. -->
-            <intent-filter android:autoVerify="true">
-                <action android:name="android.intent.action.VIEW" />
-                <category android:name="android.intent.category.DEFAULT" />
-                <category android:name="android.intent.category.BROWSABLE" />
-                <data android:scheme="https"
-                    android:host="tiktok-shop-profit-agent-uk-production.up.railway.app"
-                    android:path="/v1/tiktok/callback" />
-            </intent-filter>
-
         </activity>
 
         <provider

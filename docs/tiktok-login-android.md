@@ -1,32 +1,29 @@
-# TikTok Android Login Kit audit
+# TikTok Login Kit on private Android APK
 
-Audited on 2026-09-28 at repository HEAD `d29b6aefd7a85a1e18b82efa35d23b2ceaf8daeb`.
+Architecture change audited on 2026-09-28. TikTok Sandbox Web configuration and the owner Target User were verified in the portal. Real-device authorization has not yet been run.
 
-## Before this change
+## Active Web Login Kit path
 
-- `src/ConnectionGate.tsx` called `/v1/tiktok/authorize-native`, then opened the returned `https://www.tiktok.com/v2/auth/authorize/` URL with Capacitor Browser. That is the **Web OAuth authorization shape**, not TikTok Android OpenSDK.
-- The URL requested `user.info.basic,video.upload,video.publish`.
-- The backend marked the intent as `ANDROID`, but exchanged the code in its HTTPS GET callback without `code_verifier`; it then opened a custom URI that carried no code. The Android app did not use TikTok OpenSDK or PKCE.
-- `AndroidManifest.xml` had only a custom-scheme wake-up intent filter. No TikTok HTTPS App Link was registered.
-- `server/tiktok_provider.py` already had unmounted video helper functions, but no Content Posting API route or demonstrated end-to-end posting flow.
+- The APK posts to `/v1/tiktok/native-web-intent` with its same-origin operator session and CSRF token. The backend creates a five-minute, one-time state bound to that session and returns the official TikTok Web authorization URL with only `user.info.basic`.
+- Capacitor Browser opens that URL in an external Chrome Custom Tab; TikTok credentials are not entered into an embedded WebView.
+- The HTTPS callback accepts only unconsumed Web or native-Web intents. For the native Web flow, it validates the original server-side operator session recorded in the intent, consumes state before the code exchange, exchanges the code server-side, verifies the returned identity/scope, and encrypts access and refresh tokens at rest.
+- On success, the callback shows a success page in the external browser. Closing the Chrome Custom Tab returns to the APK, and the Capacitor Browser completion event refreshes `/v1/tiktok/connection`. No callback data or credentials are passed to the APK.
+- The HTTPS callback is not registered as an Android App Link in the APK. That avoids Android intercepting the request before Railway can perform the server-side exchange.
+- Web Login Kit uses server-side state and does not use PKCE. TikTok documents PKCE for the separate mobile/desktop flow. `video.upload` and `video.publish` remain outside this Login Kit scope.
 
-## Current implementation
+## Retained OpenSDK implementation
 
-- Android uses TikTok OpenSDK Login Kit 2.3.1, `AuthRequest`, `AuthApi`, and SDK `PKCEUtils`.
-- Each authorization gets an unpredictable state from the authenticated backend and a new SDK PKCE verifier. OpenSDK 2.3.1 `PKCEUtils` generates a 32-character alphanumeric verifier and derives the SHA-256 challenge. The verifier is encrypted in a short-lived Android Keystore-backed store across the external TikTok/Chrome handoff.
-- TikTok returns the authorization response to the Android activity through the HTTPS App Link. The app checks state, then posts the code, verifier, and state to `/v1/tiktok/android-exchange` using the operator's same-origin session and CSRF token.
-- The backend consumes the state before external exchange, requires the state to match the operator session, sends the verifier to TikTok's v2 token endpoint, verifies `user.info.basic`, encrypts tokens at rest, and returns only public connection state.
-- The Web Login Kit remains a separate backend redirect flow and does not use PKCE. Android and Web request `user.info.basic` only. `video.upload` and `video.publish` remain isolated for a later Content Posting phase.
+- The OpenSDK 2.3.1 source, `AuthRequest`/`AuthApi`, PKCE helper, Android Keystore-backed verifier store, `/v1/tiktok/android-intent`, and `/v1/tiktok/android-exchange` remain in the repository while Web login is being validated on a real device.
+- Those OpenSDK paths are not called by the active APK login button. Do not remove them until real Web login is proven and the owner confirms the retained code is unnecessary.
 
 ## Current limits / external gates
 
-- The Android redirect URI is `https://tiktok-shop-profit-agent-uk-production.up.railway.app/v1/tiktok/callback`; Android must capture it as a verified App Link. The backend's public `/.well-known/assetlinks.json` publishes the Digital Asset Links association from the non-secret Railway variable `ANDROID_APP_SHA256_FINGERPRINTS`, which must contain the exact signing certificate SHA-256.
-- The repo has no release keystore/signing configuration. The existing APK workflow is debug-signed, and its runner-generated debug certificate is not a production identity. Do not register a debug fingerprint as the Play Store release fingerprint.
-- The callback URI, package `com.tiktokshopprofitagent.app`, app client key, Android certificate fingerprints, and `user.info.basic` must be registered in the existing TikTok Developer app. No TikTok account login or authorization has been observed.
-- Repository tests and CI can prove implementation behavior with a fake provider only. They cannot prove TikTok account authorization, Android App Link verification, token issuance by TikTok, Play signing, or review approval.
+- The registered Web redirect URI is `https://tiktok-shop-profit-agent-uk-production.up.railway.app/v1/tiktok/callback`; the Web/Desktop URL is the Railway HTTPS origin. Android platform registration and Google Play URL are not used.
+- The repo has no release keystore/signing configuration. The existing APK workflow is debug-signed. The owner must install the resulting APK and complete the real TikTok authorization to prove Chrome Custom Tab return, token issuance, token storage, and CONNECTED identity.
+- Repository tests and CI can prove implementation behavior with a fake provider only. They cannot prove real TikTok authorization or token issuance. The OpenSDK PKCE path remains unproven on a real account and is not part of this Web flow.
 
 ## Current official source basis
 
-- TikTok Android Login Kit instructions require `AuthApi`, `AuthRequest`, `user.info.basic`, HTTPS `redirectUri`, `codeVerifier`, activity callback parsing, and sending `code` plus `code_verifier` to the server: <https://developers.tiktok.com/docs/en/login-kit-android-quickstart-v2/>
-- TikTok token management requires `code_verifier` for mobile and desktop, the same redirect URI used to request the code, and server-side token storage: <https://developers.tiktok.com/docs/en/oauth-user-access-token-management>
+- TikTok Login Kit Web uses the registered HTTPS callback and the Web OAuth authorization endpoint: <https://developers.tiktok.com/docs/en/login-kit-web/>
+- TikTok token management uses server-side exchange and storage; PKCE is required for the separate mobile/desktop flow: <https://developers.tiktok.com/docs/en/oauth-user-access-token-management/>
 - Official Android OpenSDK: <https://github.com/tiktok/tiktok-opensdk-android/tree/v2.3.1>
