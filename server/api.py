@@ -8,7 +8,9 @@ from decimal import Decimal
 from typing import Literal
 from uuid import uuid4
 
-from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request, File, Form, UploadFile
+from fastapi.responses import FileResponse
+from starlette.background import BackgroundTask
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
@@ -19,6 +21,7 @@ from sqlalchemy.orm import Session
 from .models import CommerceEvent, Experiment, ExperimentCost, ExperimentCostAdjustment, LaunchIntent, LearningRecord, OpportunityEvidence, ProductEvidence, TikTokConnection
 from .connection_api import add_connection_routes, utc
 from .governance import add_governance_routes, capital_check, fresh, validate_launch
+from .video_studio import render_creator_video
 
 
 Money = Decimal
@@ -104,6 +107,22 @@ def create_app(database_url: str | None = None, operator_token: str | None = Non
                 raise HTTPException(status_code=403, detail="Active TikTok identity and current manual authority required")
 
     add_governance_routes(app, engine, require_operator, require_manual_authority)
+
+    @app.post('/v1/creator-video', dependencies=[Depends(require_operator)])
+    async def creator_video(photo: UploadFile = File(...), headline: str = Form(...),
+                            message: str = Form(...), call_to_action: str = Form(...)):
+        # This is a local creative export. It does not post to TikTok or verify product claims.
+        image = await photo.read(3_000_001)
+        if len(image) > 3_000_000:
+            raise HTTPException(413, 'Imagem deve ter no máximo 3 MB')
+        try:
+            result, cleanup = render_creator_video(image, headline, message, call_to_action)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from None
+        except (RuntimeError, TimeoutError):
+            raise HTTPException(503, 'Não foi possível produzir o vídeo agora') from None
+        return FileResponse(result, media_type='video/mp4', filename='agent-tiktok-shop-video.mp4',
+                            background=BackgroundTask(cleanup))
 
     @app.get("/health")
     def health():
