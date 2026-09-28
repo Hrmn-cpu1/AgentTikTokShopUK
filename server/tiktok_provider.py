@@ -33,7 +33,7 @@ class OfficialTikTokProvider:
 
     def authorization_url(self, state: str) -> str:
         return AUTHORIZE_URL + "?" + urlencode({"client_key": self.client_key,
-            "scope": "user.info.basic,user.info.stats,video.list,video.upload,video.publish", "response_type": "code", "redirect_uri": self.redirect_uri, "state": state})
+            "scope": "user.info.basic,video.upload,video.publish", "response_type": "code", "redirect_uri": self.redirect_uri, "state": state})
 
     def _post(self, url: str, payload: dict[str, str]) -> dict:
         try:
