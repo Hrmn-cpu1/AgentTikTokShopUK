@@ -136,7 +136,7 @@ def create_app(database_url: str | None = None, operator_token: str | None = Non
             with engine.connect() as conn:
                 revision = conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
                 conn.execute(text("SELECT 1")).scalar_one()
-            if revision != "0005_server_authority":
+            if revision != "0006_growth_engine":
                 raise HTTPException(503, "Database migration required")
         except HTTPException:
             raise
