@@ -33,7 +33,7 @@ class OfficialTikTokProvider:
 
     def authorization_url(self, state: str) -> str:
         return AUTHORIZE_URL + "?" + urlencode({"client_key": self.client_key,
-            "scope": "user.info.basic", "response_type": "code", "redirect_uri": self.redirect_uri, "state": state})
+            "scope": "user.info.basic,user.info.stats,video.list,video.upload,video.publish", "response_type": "code", "redirect_uri": self.redirect_uri, "state": state})
 
     def _post(self, url: str, payload: dict[str, str]) -> dict:
         try:
@@ -87,3 +87,47 @@ class OfficialTikTokProvider:
 
     def revoke(self, access_token: str) -> None:
         self._post(REVOKE_URL, {"token": access_token})
+
+
+CREATOR_INFO_URL = "https://open.tiktokapis.com/v2/post/publish/creator_info/query/"
+DIRECT_INIT_URL = "https://open.tiktokapis.com/v2/post/publish/video/init/"
+UPLOAD_INIT_URL = "https://open.tiktokapis.com/v2/post/publish/inbox/video/init/"
+STATUS_URL = "https://open.tiktokapis.com/v2/post/publish/status/fetch/"
+
+def _bearer_post(url: str, access_token: str, payload: dict) -> dict:
+    try:
+        with httpx.Client(timeout=20) as client:
+            response = client.post(url, json=payload, headers={"Authorization": "Bearer " + access_token,
+                "Content-Type": "application/json; charset=UTF-8"})
+            response.raise_for_status()
+            result = response.json()
+        if result.get("error", {}).get("code") != "ok":
+            raise ProviderError("TikTok content posting rejected")
+        return result.get("data", {})
+    except (httpx.HTTPError, ValueError, AttributeError) as exc:
+        raise ProviderError("TikTok content posting unavailable") from exc
+
+def query_creator_info(access_token: str) -> dict:
+    return _bearer_post(CREATOR_INFO_URL, access_token, {})
+
+def init_video_upload(access_token: str, size: int) -> dict:
+    return _bearer_post(UPLOAD_INIT_URL, access_token, {"source_info":{"source":"FILE_UPLOAD",
+        "video_size":size,"chunk_size":size,"total_chunk_count":1}})
+
+def init_direct_post(access_token: str, size: int, title: str, privacy_level: str, is_aigc: bool=True) -> dict:
+    return _bearer_post(DIRECT_INIT_URL, access_token, {"post_info":{"title":title,
+        "privacy_level":privacy_level,"disable_duet":False,"disable_comment":False,
+        "disable_stitch":False,"is_aigc":is_aigc},"source_info":{"source":"FILE_UPLOAD",
+        "video_size":size,"chunk_size":size,"total_chunk_count":1}})
+
+def upload_video_bytes(upload_url: str, video: bytes) -> None:
+    try:
+        with httpx.Client(timeout=60) as client:
+            response = client.put(upload_url, content=video, headers={"Content-Type":"video/mp4",
+                "Content-Length":str(len(video)),"Content-Range":f"bytes 0-{len(video)-1}/{len(video)}"})
+            response.raise_for_status()
+    except httpx.HTTPError as exc:
+        raise ProviderError("TikTok video upload failed") from exc
+
+def fetch_publish_status(access_token: str, publish_id: str) -> dict:
+    return _bearer_post(STATUS_URL, access_token, {"publish_id":publish_id})
