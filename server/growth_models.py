@@ -1,0 +1,89 @@
+"""Durable Brazil growth-engine business truth. No external effect is implied by a row."""
+from datetime import datetime
+from sqlalchemy import DateTime, Integer, String, Text, ForeignKey, UniqueConstraint, CheckConstraint
+from sqlalchemy.orm import Mapped, mapped_column
+from .models import Base
+
+class NicheHypothesis(Base):
+    __tablename__="growth_niches"
+    niche_id:Mapped[str]=mapped_column(String(100),primary_key=True)
+    market:Mapped[str]=mapped_column(String(2),nullable=False,default="BR")
+    language:Mapped[str]=mapped_column(String(10),nullable=False,default="pt-BR")
+    hypothesis:Mapped[str]=mapped_column(Text,nullable=False)
+    trend_evidence:Mapped[str]=mapped_column(Text,nullable=False)
+    production_cost_centavos:Mapped[int]=mapped_column(Integer,nullable=False,default=0)
+    risk:Mapped[str]=mapped_column(String(20),nullable=False,default="LOW")
+    status:Mapped[str]=mapped_column(String(20),nullable=False,default="EXPLORING")
+    created_at:Mapped[datetime]=mapped_column(DateTime(timezone=True),nullable=False)
+    __table_args__=(CheckConstraint("status IN ('EXPLORING','PROMISING','WINNER','DECLINING','KILLED')",name="growth_niche_status"),)
+
+class TrendSignal(Base):
+    __tablename__="growth_trends"
+    trend_id:Mapped[str]=mapped_column(String(100),primary_key=True)
+    source:Mapped[str]=mapped_column(String(40),nullable=False)
+    source_ref:Mapped[str]=mapped_column(String(1000),nullable=False)
+    topic:Mapped[str]=mapped_column(String(300),nullable=False)
+    market:Mapped[str]=mapped_column(String(2),nullable=False,default="BR")
+    language:Mapped[str]=mapped_column(String(10),nullable=False,default="pt-BR")
+    metrics_json:Mapped[str]=mapped_column(Text,nullable=False,default="{}")
+    evidence:Mapped[str]=mapped_column(Text,nullable=False)
+    observed_at:Mapped[datetime]=mapped_column(DateTime(timezone=True),nullable=False)
+
+class GrowthCreative(Base):
+    __tablename__="growth_creatives"
+    creative_id:Mapped[str]=mapped_column(String(100),primary_key=True)
+    niche_id:Mapped[str]=mapped_column(ForeignKey("growth_niches.niche_id"),nullable=False)
+    trend_id:Mapped[str]=mapped_column(ForeignKey("growth_trends.trend_id"),nullable=False)
+    experiment_id:Mapped[str]=mapped_column(String(100),nullable=False,unique=True)
+    plan_json:Mapped[str]=mapped_column(Text,nullable=False)
+    evidence_ref:Mapped[str]=mapped_column(String(1000),nullable=False)
+    state:Mapped[str]=mapped_column(String(30),nullable=False,default="SCRIPTED")
+    media_ref:Mapped[str|None]=mapped_column(String(1000))
+    media_hash:Mapped[str|None]=mapped_column(String(64))
+    scheduled_at:Mapped[datetime|None]=mapped_column(DateTime(timezone=True))
+    created_at:Mapped[datetime]=mapped_column(DateTime(timezone=True),nullable=False)
+    __table_args__=(CheckConstraint("state IN ('IDEA','SCRIPTED','ASSETS_PENDING','ASSETS_READY','RENDERING','READY','QUEUED','PUBLISHING','PUBLISHED','OBSERVING','LEARNED','FAILED','BLOCKED')",name="growth_creative_state"),)
+
+class PublicationIntent(Base):
+    __tablename__="growth_publication_intents"
+    publication_intent_id:Mapped[str]=mapped_column(String(100),primary_key=True)
+    creative_id:Mapped[str]=mapped_column(ForeignKey("growth_creatives.creative_id"),nullable=False)
+    idempotency_key:Mapped[str]=mapped_column(String(100),nullable=False,unique=True)
+    media_hash:Mapped[str]=mapped_column(String(64),nullable=False)
+    provider:Mapped[str]=mapped_column(String(40),nullable=False)
+    provider_publish_id:Mapped[str|None]=mapped_column(String(300))
+    provider_status:Mapped[str]=mapped_column(String(40),nullable=False,default="NOT_CONFIGURED")
+    created_at:Mapped[datetime]=mapped_column(DateTime(timezone=True),nullable=False)
+
+class FollowerSnapshot(Base):
+    __tablename__="growth_follower_snapshots"
+    snapshot_id:Mapped[str]=mapped_column(String(100),primary_key=True)
+    account_id:Mapped[str]=mapped_column(String(200),nullable=False)
+    followers:Mapped[int|None]=mapped_column(Integer)
+    source:Mapped[str]=mapped_column(String(40),nullable=False)
+    evidence_ref:Mapped[str]=mapped_column(String(1000),nullable=False)
+    observed_at:Mapped[datetime]=mapped_column(DateTime(timezone=True),nullable=False)
+    __table_args__=(CheckConstraint("followers IS NULL OR followers >= 0",name="followers_nonnegative"),)
+
+class GrowthObservation(Base):
+    __tablename__="growth_observations"
+    observation_id:Mapped[str]=mapped_column(String(100),primary_key=True)
+    creative_id:Mapped[str]=mapped_column(ForeignKey("growth_creatives.creative_id"),nullable=False)
+    views:Mapped[int|None]=mapped_column(Integer)
+    likes:Mapped[int|None]=mapped_column(Integer)
+    comments:Mapped[int|None]=mapped_column(Integer)
+    shares:Mapped[int|None]=mapped_column(Integer)
+    followers_before:Mapped[int|None]=mapped_column(Integer)
+    followers_after:Mapped[int|None]=mapped_column(Integer)
+    source:Mapped[str]=mapped_column(String(40),nullable=False)
+    evidence_ref:Mapped[str]=mapped_column(String(1000),nullable=False)
+    observed_at:Mapped[datetime]=mapped_column(DateTime(timezone=True),nullable=False)
+
+class GrowthLearning(Base):
+    __tablename__="growth_learning"
+    learning_id:Mapped[str]=mapped_column(String(100),primary_key=True)
+    creative_id:Mapped[str]=mapped_column(ForeignKey("growth_creatives.creative_id"),nullable=False)
+    verdict:Mapped[str]=mapped_column(String(30),nullable=False)
+    rationale:Mapped[str]=mapped_column(Text,nullable=False)
+    next_mutation_json:Mapped[str]=mapped_column(Text,nullable=False)
+    created_at:Mapped[datetime]=mapped_column(DateTime(timezone=True),nullable=False)
