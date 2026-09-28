@@ -48,7 +48,7 @@ jobs:
           "$ANDROID_HOME/build-tools/36.0.0/aapt" dump badging "$apk" > /tmp/apk-badging.txt
           grep "^package: name='com.tiktokshopprofitagent.app' versionCode='4' versionName='1.3'" /tmp/apk-badging.txt
           "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --print-certs "$apk" | grep -E 'Signer #1 certificate (MD5|SHA-256) digest'
-          grep -q 'tiktok-open-sdk-auth:2.3.1' android/app/build.gradle
+          grep -q "AUTH_SDK_VERSION.*2.3.1" android/tiktok-open-sdk/auth/build.gradle
           grep "^uses-permission: name='android.permission.INTERNET'" /tmp/apk-badging.txt
           grep '^uses-permission:' /tmp/apk-badging.txt
           if grep -E '^uses-permission:.*(CONTACTS|LOCATION|CAMERA|RECORD_AUDIO|STORAGE|READ_MEDIA)' /tmp/apk-badging.txt; then
