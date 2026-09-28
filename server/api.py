@@ -22,6 +22,7 @@ from .models import CommerceEvent, Experiment, ExperimentCost, ExperimentCostAdj
 from .connection_api import add_connection_routes, utc
 from .governance import add_governance_routes, capital_check, fresh, validate_launch
 from .video_studio import render_creator_video
+from .growth_api import add_growth_routes
 
 
 Money = Decimal
@@ -107,6 +108,7 @@ def create_app(database_url: str | None = None, operator_token: str | None = Non
                 raise HTTPException(status_code=403, detail="Active TikTok identity and current manual authority required")
 
     add_governance_routes(app, engine, require_operator, require_manual_authority)
+    add_growth_routes(app, engine, require_operator)
 
     @app.post('/v1/creator-video', dependencies=[Depends(require_operator)])
     async def creator_video(photo: UploadFile = File(...), headline: str = Form(...),
