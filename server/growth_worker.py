@@ -30,8 +30,8 @@ def seed_scripted_creatives(session: Session):
 def claim_due_job(session: Session, worker_id: str):
     now = utcnow()
     job = session.scalar(select(GrowthJob).where(
-        GrowthJob.state.in_(("PENDING", "RETRY")), GrowthJob.available_at <= now)
-        .order_by(GrowthJob.available_at).limit(1))
+        ((GrowthJob.state.in_(("PENDING", "RETRY"))) | ((GrowthJob.state == "RUNNING") & (GrowthJob.lease_until < now))), GrowthJob.available_at <= now)
+        .order_by(GrowthJob.available_at).with_for_update(skip_locked=True).limit(1))
     if not job:
         return None
     job.state = "RUNNING"
