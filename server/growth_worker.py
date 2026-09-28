@@ -5,6 +5,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 from .growth_models import GrowthCreative
 from .growth_queue_models import GrowthJob, utcnow
+from .growth_renderer import render_growth_plan
 
 def enqueue_job(session: Session, creative_id: str, job_type: str):
     key = creative_id + ":" + job_type
@@ -52,6 +53,17 @@ def finish_internal_job(session: Session, job: GrowthJob):
         enqueue_job(session, creative.creative_id, "RENDER_VIDEO")
         job.state = "SUCCEEDED"
         job.last_error = None
+    elif job.job_type == "RENDER_VIDEO" and creative.state == "ASSETS_PENDING":
+        output, digest, cleanup = render_growth_plan(creative.plan_json)
+        try:
+            creative.media_ref = "local-render://" + creative.creative_id + "/" + output.name
+            creative.media_hash = digest
+            creative.state = "READY"
+            enqueue_job(session, creative.creative_id, "QUEUE_PUBLICATION")
+            job.state = "SUCCEEDED"
+            job.last_error = None
+        finally:
+            cleanup()
     else:
         job.state = "BLOCKED"
         job.last_error = "provider_not_configured"
