@@ -89,7 +89,8 @@ export default function ConnectionGate() {
     } catch (error) {setMessage(error instanceof Error?error.message:'Não foi possível desconectar');}
     await refresh();
   };
-  if (phase==='loading') return <div className="connection-shell"><h1>AgentTikTok Shop</h1><p>Verificando conexão…</p></div>;
+  const legal = <footer className="connection-note"><a href="/terms.html">Termos de Serviço</a> · <a href="/privacy.html">Política de Privacidade</a></footer>;
+  if (phase==='loading') return <div className="connection-shell"><h1>AgentTikTok Shop</h1><p>Plataforma para criar, gerenciar e publicar conteúdo em vídeo com autorização do usuário.</p><p>Verificando conexão…</p>{legal}</div>;
   if (phase==='error') return <div className="connection-shell"><h1>Conexão indisponível</h1><p>{message}</p><button onClick={()=>{setPhase('loading');void refresh()}}>Tentar novamente</button></div>;
   if (phase==='login') return <div className="connection-shell"><h1>AgentTikTok Shop</h1>
     <p>Entre como operador para continuar.</p><form onSubmit={event=>{void login(event)}}>
@@ -100,7 +101,7 @@ export default function ConnectionGate() {
     <h1>AgentTikTok Shop</h1><p>Conecte sua conta TikTok para começar.</p>
     {connection?.authorizationConfigured?<button className="connection-primary" onClick={()=>{void startTikTok()}}>Continuar com TikTok</button>:
       <><button className="connection-primary" disabled>Continuar com TikTok</button><p>É necessário configurar o aplicativo oficial de desenvolvedor e a criptografia no servidor.</p></>}
-    <p className="connection-note">A conexão verifica a identidade. Shop, afiliação e publicação exigem permissões separadas.</p>
+    <p className="connection-note">A conexão verifica a identidade. A publicação usa apenas as permissões autorizadas pelo próprio usuário.</p>{legal}
     <GrowthStudio />
     {message&&<p role="alert">{message}</p>}</div>;
   const active=connection.connection.status==='ACTIVE' && connection.capabilities.IDENTITY==='AVAILABLE';
@@ -115,6 +116,6 @@ export default function ConnectionGate() {
       <GrowthStudio />
     </>:<button className="connection-primary" onClick={()=>{void startTikTok()}}>Reconectar TikTok</button>}
     <button className="connection-secondary" onClick={()=>{void disconnect()}}>Desconectar TikTok</button>
-    {message&&<p role="alert">{message}</p>}
+    {message&&<p role="alert">{message}</p>}{legal}
   </div>;
 }
