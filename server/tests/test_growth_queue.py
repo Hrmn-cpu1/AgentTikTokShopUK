@@ -6,7 +6,10 @@ from server.growth_models import GrowthCreative, NicheHypothesis, TrendSignal
 from server.growth_queue_models import GrowthJob
 from server.growth_worker import claim_due_job, enqueue_job
 
-def test_queue_idempotency_and_claim(postgres_engine):
+def test_queue_idempotency_and_claim():
+    import os
+    from sqlalchemy import create_engine
+    postgres_engine = create_engine(os.environ["DATABASE_URL"])
     suffix = uuid4().hex[:10]
     now = datetime.now(timezone.utc)
     with Session(postgres_engine) as s:
