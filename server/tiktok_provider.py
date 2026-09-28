@@ -33,7 +33,7 @@ class OfficialTikTokProvider:
 
     def authorization_url(self, state: str) -> str:
         return AUTHORIZE_URL + "?" + urlencode({"client_key": self.client_key,
-            "scope": "user.info.basic,video.upload,video.publish", "response_type": "code", "redirect_uri": self.redirect_uri, "state": state})
+            "scope": "user.info.basic", "response_type": "code", "redirect_uri": self.redirect_uri, "state": state})
 
     def _post(self, url: str, payload: dict[str, str]) -> dict:
         try:
@@ -48,9 +48,12 @@ class OfficialTikTokProvider:
         except (httpx.HTTPError, ValueError) as exc:
             raise ProviderError("TikTok authorization unavailable") from exc
 
-    def exchange(self, code: str) -> Tokens:
-        result = self._post(TOKEN_URL, {"grant_type": "authorization_code", "code": code,
-            "redirect_uri": self.redirect_uri})
+    def exchange(self, code: str, code_verifier: str | None = None) -> Tokens:
+        payload = {"grant_type": "authorization_code", "code": code,
+            "redirect_uri": self.redirect_uri}
+        if code_verifier is not None:
+            payload["code_verifier"] = code_verifier
+        result = self._post(TOKEN_URL, payload)
         try:
             tokens = Tokens.model_validate(result)
             if tokens.token_type != "Bearer":

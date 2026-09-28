@@ -1,7 +1,6 @@
 """Engineering journey with a fake Login Kit provider; no real TikTok or money."""
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
 
 import pytest
 from alembic import command
@@ -42,13 +41,12 @@ def authenticate(system):
     assert c.get('/v1/portfolio').status_code == 401
     assert c.post('/v1/operator/login', json={'access_key': LOGIN}).status_code == 200
     assert c.get('/v1/tiktok/connection').json()['capabilities']['AFFILIATE'] == 'UNKNOWN'
-    result = c.get('/v1/tiktok/authorize-native')
-    state = parse_qs(urlparse(result.json()['authorizationUrl']).query)['state'][0]
-    callback = new_client()  # Browser cookie jar is intentionally separate from the WebView.
-    assert callback.get('/v1/tiktok/callback', params={'state':'wrong', 'code':'valid-code'}).status_code == 403
-    response = callback.get('/v1/tiktok/callback', params={'state':state,'code':'valid-code'},follow_redirects=False)
-    assert response.status_code == 303 and response.headers['location']=='com.tiktokshopprofitagent.app://oauth-return'
-    assert callback.get('/v1/tiktok/callback',params={'state':state,'code':'valid-code'}).status_code == 403
+    result = post(c, 'tiktok/android-intent', {})
+    assert result.status_code == 200
+    state = result.json()['state']
+    response = post(c, 'tiktok/android-exchange', {'state':state,'code':'valid-code','code_verifier':'v'*32})
+    assert response.status_code == 200
+    assert response.json()['connection']['status']=='ACTIVE'
     assert c.get('/v1/tiktok/connection').json()['capabilities']['IDENTITY']=='AVAILABLE'
     assert post(c, 'tiktok/manual-verification', {'uk_market_evidence_ref':'shop:verified:uk',
         'affiliate_evidence_ref':'affiliate:manual:receipt'}).json()['mode']=='MANUAL_VERIFIED'

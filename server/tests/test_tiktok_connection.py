@@ -33,18 +33,22 @@ def database(tmp_path, monkeypatch):
 
 class FakeProvider:
     def __init__(self):
+        self.client_key = "test-tiktok-client-key"
+        self.redirect_uri = "https://agent.example/v1/tiktok/callback"
         self.revoked = False
         self.fail_revoke = False
         self.fail_refresh = False
         self.open_id = "creator-uk-1"
         self.refresh_count = 0
+        self.exchange_verifiers = []
 
     def authorization_url(self, state):
         return "https://www.tiktok.com/v2/auth/authorize/?" + f"state={state}&scope=user.info.basic"
 
-    def exchange(self, code):
+    def exchange(self, code, code_verifier=None):
         if code != "valid-code":
             raise ProviderError("Code rejected")
+        self.exchange_verifiers.append(code_verifier)
         return Tokens(open_id=self.open_id, access_token="secret-access", refresh_token="secret-refresh",
             scope="user.info.basic", token_type="Bearer", expires_in=86400, refresh_expires_in=31536000)
 
@@ -224,28 +228,52 @@ def test_provider_identity_revocation_is_revalidated_and_manual_proof_expires(da
     assert c.get("/v1/tiktok/connection").json()["connection"]["status"]=="UNKNOWN"
 
 
-def test_android_system_browser_callback_has_one_use_session_bound_state(database):
+def test_android_pkce_exchange_has_one_use_session_bound_state(database):
     provider=FakeProvider()
     app=browser(database,provider)
     login(app)
-    start=app.get("/v1/tiktok/authorize-native")
+    csrf=app.cookies.get("operator_csrf")
+    start=app.post("/v1/tiktok/android-intent",headers={"X-CSRF-Token":csrf})
     assert start.status_code==200
-    url=start.json()["authorizationUrl"]
-    assert url.startswith("https://www.tiktok.com/v2/auth/authorize/")
-    state=parse_qs(urlparse(url).query)["state"][0]
-    chrome=browser(database,provider)  # System browser has a different cookie jar.
-    assert chrome.get("/v1/tiktok/callback",params={"state":"wrong","code":"valid-code"}).status_code==403
-    result=chrome.get("/v1/tiktok/callback",params={"state":state,"code":"valid-code"},follow_redirects=False)
-    assert result.status_code==303
-    assert result.headers["location"]=="com.tiktokshopprofitagent.app://oauth-return"
-    assert "secret" not in result.headers["location"]
-    assert chrome.get("/v1/tiktok/callback",params={"state":state,"code":"valid-code"}).status_code==403
+    payload=start.json()
+    state=payload["state"]
+    assert payload["clientKey"]==provider.client_key
+    assert payload["redirectUri"]==provider.redirect_uri
+    assert "secret" not in str(payload)
+    body={"state":state,"code":"valid-code","code_verifier":"v"*32}
+    assert app.post("/v1/tiktok/android-exchange",json={**body,"state":"wrong-state-value-at-least-20"},headers={"X-CSRF-Token":csrf}).status_code==403
+    other=browser(database,provider)
+    login(other)
+    assert other.post("/v1/tiktok/android-exchange",json=body,
+        headers={"X-CSRF-Token":other.cookies.get("operator_csrf")}).status_code==403
+    result=app.post("/v1/tiktok/android-exchange",json=body,headers={"X-CSRF-Token":csrf})
+    assert result.status_code==200
+    assert result.json()["connection"]["status"]=="ACTIVE"
+    assert "secret-access" not in result.text and "secret-refresh" not in result.text
+    assert provider.exchange_verifiers==["v"*32]
+    assert app.post("/v1/tiktok/android-exchange",json=body,headers={"X-CSRF-Token":csrf}).status_code==403
     assert app.get("/v1/tiktok/connection").json()["capabilities"]["IDENTITY"]=="AVAILABLE"
-    another=app.get("/v1/tiktok/authorize-native").json()["authorizationUrl"]
-    pending=parse_qs(urlparse(another).query)["state"][0]
+    another=app.post("/v1/tiktok/android-intent",headers={"X-CSRF-Token":csrf}).json()
     with Session(create_engine(database)) as session:
-        intent=session.get(TikTokOAuthIntent, sha256(pending.encode()).hexdigest())
+        intent=session.get(TikTokOAuthIntent, sha256(another["state"].encode()).hexdigest())
         owner=session.get(OperatorSession,intent.session_hash)
         owner.expires_at=datetime.now(timezone.utc)-timedelta(seconds=1)
         session.commit()
-    assert chrome.get("/v1/tiktok/callback",params={"state":pending,"code":"valid-code"}).status_code==403
+    assert app.post("/v1/tiktok/android-exchange",json={**body,"state":another["state"]},
+        headers={"X-CSRF-Token":csrf}).status_code==401
+
+
+def test_android_assetlinks_is_public_and_accepts_only_certificate_fingerprints(database, monkeypatch):
+    provider=FakeProvider()
+    c=browser(database,provider)
+    monkeypatch.delenv("ANDROID_APP_SHA256_FINGERPRINTS", raising=False)
+    assert c.get("/.well-known/assetlinks.json").json()==[]
+    fingerprint=":".join(["AB"]*32)
+    monkeypatch.setenv("ANDROID_APP_SHA256_FINGERPRINTS",fingerprint.lower())
+    response=c.get("/.well-known/assetlinks.json")
+    assert response.status_code==200
+    assert response.json()==[{"relation":["delegate_permission/common.handle_all_urls"],
+        "target":{"namespace":"android_app","package_name":"com.tiktokshopprofitagent.app",
+            "sha256_cert_fingerprints":[fingerprint]}}]
+    monkeypatch.setenv("ANDROID_APP_SHA256_FINGERPRINTS","not-a-certificate")
+    assert c.get("/.well-known/assetlinks.json").status_code==500

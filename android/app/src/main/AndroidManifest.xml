@@ -1,6 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
+    <queries>
+        <package android:name="com.zhiliaoapp.musically" />
+        <package android:name="com.ss.android.ugc.trill" />
+    </queries>
+
     <application
         android:allowBackup="false"
         android:icon="@mipmap/ic_launcher"
@@ -22,13 +27,14 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
 
-            <!-- TikTok's registered OAuth callback remains HTTPS on our backend.
-                 This app-defined return link carries no authorization code or token. -->
-            <intent-filter>
+            <!-- TikTok Android Login Kit returns the code by HTTPS App Link. -->
+            <intent-filter android:autoVerify="true">
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
-                <data android:scheme="com.tiktokshopprofitagent.app" android:host="oauth-return" />
+                <data android:scheme="https"
+                    android:host="tiktok-shop-profit-agent-uk-production.up.railway.app"
+                    android:path="/v1/tiktok/callback" />
             </intent-filter>
 
         </activity>

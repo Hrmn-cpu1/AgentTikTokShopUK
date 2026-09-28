@@ -10,7 +10,7 @@ from uuid import uuid4
 
 from cryptography.fernet import Fernet
 from fastapi import APIRouter, HTTPException, Request, Response
-from fastapi.responses import RedirectResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -45,6 +45,13 @@ class ManualVerificationInput(BaseModel):
         if "?" in value or re.search(r"password|access[_ -]?token|refresh[_ -]?token|client[_ -]?secret|bearer|passport|bank[_ -]?account", value, re.I):
             raise ValueError("Use a safe evidence reference, not credentials or identity documents")
         return value
+
+
+class AndroidExchangeInput(BaseModel):
+    state: str = Field(min_length=20, max_length=256)
+    code: str = Field(min_length=1, max_length=4096)
+    # TikTok OpenSDK 2.3.1 PKCEUtils emits 32 random alphanumeric characters.
+    code_verifier: str = Field(min_length=32, max_length=128, pattern=r"^[A-Za-z0-9._~-]+$")
 
 
 def add_connection_routes(app, engine, provider=None, *, login_secret=None, encryption_key=None):
@@ -90,6 +97,33 @@ def add_connection_routes(app, engine, provider=None, *, login_secret=None, encr
         record.refresh_expires_at = now + timedelta(seconds=tokens.refresh_expires_in)
         record.last_validated_at = now
         record.status = "ACTIVE"
+
+    def exchange_and_store(service, crypto: Fernet, code: str, code_verifier: str | None = None):
+        try:
+            tokens = service.exchange(code, code_verifier)
+            if "user.info.basic" not in tokens.scope.split(","):
+                raise ProviderError("Identity scope was not granted")
+            open_id, display_name = service.identity(tokens.access_token)
+            if open_id != tokens.open_id:
+                raise ProviderError("TikTok identity mismatch")
+        except ProviderError:
+            raise HTTPException(502, "TikTok identity could not be verified") from None
+        with Session(engine) as session:
+            record = connection(session)
+            if record and record.provider_user_id != open_id:
+                raise HTTPException(409, "A different TikTok identity is already recorded")
+            current = now_utc()
+            if record is None:
+                record = TikTokConnection(connection_id=str(uuid4()), operator_id="primary", provider_user_id=open_id,
+                    display_name=display_name, connected_at=current, access_expires_at=current,
+                    refresh_expires_at=current, granted_scopes="", last_validated_at=current, status="UNKNOWN")
+                session.add(record)
+            else:
+                record.manual_verified_at = None
+            record.display_name = display_name
+            save_tokens(record, tokens, crypto, current)
+            session.commit()
+            return public_state(record)
 
     def validate(record: TikTokConnection, session: Session):
         if record.status != "ACTIVE":
@@ -172,6 +206,24 @@ def add_connection_routes(app, engine, provider=None, *, login_secret=None, encr
             operator(request, session)
         return {"authenticated": True}
 
+    @router.get("/.well-known/assetlinks.json", include_in_schema=False)
+    def android_asset_links():
+        fingerprints = []
+        for raw in os.getenv("ANDROID_APP_SHA256_FINGERPRINTS", "").split(","):
+            value = raw.strip()
+            if not value:
+                continue
+            if not re.fullmatch(r"(?:[0-9A-Fa-f]{2}:){31}[0-9A-Fa-f]{2}", value):
+                raise HTTPException(500, "Android App Link certificate configuration is invalid")
+            fingerprints.append(value.upper())
+        if not fingerprints:
+            return JSONResponse(content=[])
+        return JSONResponse(content=[{
+            "relation": ["delegate_permission/common.handle_all_urls"],
+            "target": {"namespace": "android_app", "package_name": "com.tiktokshopprofitagent.app",
+                "sha256_cert_fingerprints": fingerprints},
+        }])
+
     @router.get("/v1/tiktok/connection")
     def get_connection(request: Request):
         with Session(engine) as session:
@@ -192,16 +244,30 @@ def add_connection_routes(app, engine, provider=None, *, login_secret=None, encr
             session.commit()
         return RedirectResponse(service.authorization_url(state), status_code=302)
 
-    @router.get("/v1/tiktok/authorize-native")
-    def authorize_native(request: Request):
+    @router.post("/v1/tiktok/android-intent")
+    def android_intent(request: Request):
         service, _ = require_ready()
         with Session(engine) as session:
-            user_session = operator(request, session)
+            user_session = operator(request, session, csrf=True)
             state = secrets.token_urlsafe(48)
             session.add(TikTokOAuthIntent(state_hash=digest(state), session_hash=user_session.session_hash,
                 expires_at=now_utc() + timedelta(minutes=5), platform="ANDROID"))
             session.commit()
-        return {"authorizationUrl": service.authorization_url(state)}
+        return {"state": state, "clientKey": service.client_key, "redirectUri": service.redirect_uri}
+
+    @router.post("/v1/tiktok/android-exchange")
+    def android_exchange(request: Request, item: AndroidExchangeInput):
+        service, crypto = require_ready()
+        with Session(engine) as session:
+            user_session = operator(request, session, csrf=True)
+            intent = session.scalar(select(TikTokOAuthIntent).where(
+                TikTokOAuthIntent.state_hash == digest(item.state)).with_for_update())
+            if (intent is None or intent.platform != "ANDROID" or intent.consumed_at or
+                    utc(intent.expires_at) <= now_utc() or intent.session_hash != user_session.session_hash):
+                raise HTTPException(403, "Android authorization state invalid or expired")
+            intent.consumed_at = now_utc()
+            session.commit()
+        return exchange_and_store(service, crypto, item.code, item.code_verifier)
 
     @router.get("/v1/tiktok/callback")
     def callback(request: Request, state: str = "", code: str = "", error: str = ""):
@@ -211,47 +277,17 @@ def add_connection_routes(app, engine, provider=None, *, login_secret=None, encr
                 TikTokOAuthIntent.state_hash == digest(state)).with_for_update()) if state else None
             if intent is None or intent.consumed_at or utc(intent.expires_at) <= now_utc():
                 raise HTTPException(403, "Authorization state invalid or expired")
-            if intent.platform == "WEB":
-                user_session = operator(request, session)
-                if intent.session_hash != user_session.session_hash:
-                    raise HTTPException(403, "Authorization session mismatch")
-            elif intent.platform == "ANDROID":
-                owner = session.get(OperatorSession, intent.session_hash)
-                if owner is None or utc(owner.expires_at) <= now_utc():
-                    raise HTTPException(403, "Authorization session expired")
-            else:
+            if intent.platform != "WEB":
                 raise HTTPException(403, "Authorization platform invalid")
-            platform = intent.platform
+            user_session = operator(request, session)
+            if intent.session_hash != user_session.session_hash:
+                raise HTTPException(403, "Authorization session mismatch")
             intent.consumed_at = now_utc()
             session.commit()  # Consume before external exchange: callback replay cannot duplicate effects.
         if error or not code:
             raise HTTPException(400, "TikTok authorization was declined")
-        try:
-            tokens = service.exchange(code)
-            if "user.info.basic" not in tokens.scope.split(","):
-                raise ProviderError("Identity scope was not granted")
-            open_id, display_name = service.identity(tokens.access_token)
-            if open_id != tokens.open_id:
-                raise ProviderError("TikTok identity mismatch")
-        except ProviderError:
-            raise HTTPException(502, "TikTok identity could not be verified") from None
-        with Session(engine) as session:
-            record = connection(session)
-            if record and record.provider_user_id != open_id:
-                raise HTTPException(409, "A different TikTok identity is already recorded")
-            current = now_utc()
-            if record is None:
-                record = TikTokConnection(connection_id=str(uuid4()), operator_id="primary", provider_user_id=open_id,
-                    display_name=display_name, connected_at=current, access_expires_at=current,
-                    refresh_expires_at=current, granted_scopes="", last_validated_at=current, status="UNKNOWN")
-                session.add(record)
-            else:
-                # Reauthorization cannot silently reactivate an earlier manual Shop assertion.
-                record.manual_verified_at = None
-            record.display_name = display_name
-            save_tokens(record, tokens, crypto, current)
-            session.commit()
-        return RedirectResponse("com.tiktokshopprofitagent.app://oauth-return" if platform == "ANDROID" else "/", status_code=303)
+        exchange_and_store(service, crypto, code)
+        return RedirectResponse("/", status_code=303)
 
     @router.post("/v1/tiktok/disconnect")
     def disconnect(request: Request):
