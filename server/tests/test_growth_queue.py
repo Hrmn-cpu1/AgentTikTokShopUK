@@ -35,14 +35,17 @@ def test_queue_idempotency_and_claim():
         assert claimed.lease_owner == "ci-worker"
 
 
-def test_expired_running_job_is_reclaimed(postgres_engine):
+def test_expired_running_job_is_reclaimed():
     from datetime import timedelta
     from server.growth_queue_models import GrowthJob, utcnow
     from server.growth_worker import claim_due_job
     from sqlalchemy.orm import Session
     from uuid import uuid4
     now = utcnow()
-    with Session(postgres_engine) as session:
+    from sqlalchemy import create_engine
+    import os
+    engine = create_engine(os.environ['DATABASE_URL'])
+    with Session(engine) as session:
         creative_id = session.execute(__import__("sqlalchemy").text("select creative_id from growth_creatives limit 1")).scalar_one()
         job = GrowthJob(job_id=str(uuid4()), creative_id=creative_id, job_type="RECOVER_TEST",
             idempotency_key=str(uuid4()), state="RUNNING", attempts=1, available_at=now-timedelta(minutes=1),
