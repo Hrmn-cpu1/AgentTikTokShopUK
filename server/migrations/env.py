@@ -7,6 +7,7 @@ from sqlalchemy import engine_from_config, pool
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from server.models import Base
+from server import growth_models  # register growth tables with metadata
 
 config = context.config
 url = os.environ.get("DATABASE_URL")
