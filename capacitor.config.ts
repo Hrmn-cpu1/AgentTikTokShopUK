@@ -11,7 +11,7 @@ if (origin) {
 
 const config: CapacitorConfig = {
   appId: 'com.tiktokshopprofitagent.app',
-  appName: 'TikTok Shop Profit Agent',
+  appName: 'AgentTikTok Shop',
   webDir: 'dist',
   ...(origin ? {server: {url: origin, cleartext: false}} : {}),
 };

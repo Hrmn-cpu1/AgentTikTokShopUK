@@ -46,7 +46,7 @@ jobs:
           unzip -t "$apk" | tail -1
           test "$(unzip -l "$apk" | grep 'assets/public/index.html' | wc -l)" -eq 1
           "$ANDROID_HOME/build-tools/36.0.0/aapt" dump badging "$apk" > /tmp/apk-badging.txt
-          grep "^package: name='com.tiktokshopprofitagent.app' versionCode='2' versionName='1.1'" /tmp/apk-badging.txt
+          grep "^package: name='com.tiktokshopprofitagent.app' versionCode='3' versionName='1.2'" /tmp/apk-badging.txt
           grep "^uses-permission: name='android.permission.INTERNET'" /tmp/apk-badging.txt
           grep '^uses-permission:' /tmp/apk-badging.txt
           if grep -E '^uses-permission:.*(CONTACTS|LOCATION|CAMERA|RECORD_AUDIO|STORAGE|READ_MEDIA)' /tmp/apk-badging.txt; then
@@ -55,7 +55,7 @@ jobs:
           fi
       - uses: actions/upload-artifact@v4
         with:
-          name: tiktok-shop-profit-agent-android-debug
+          name: agenttiktok-shop-br-android-debug
           path: android/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 14
