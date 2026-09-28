@@ -33,6 +33,7 @@ def digest(value: str):
 
 class LoginInput(BaseModel):
     access_key: str = Field(min_length=1)
+    remember_device: bool = False
 
 
 class ManualVerificationInput(BaseModel):
@@ -189,14 +190,15 @@ def add_connection_routes(app, engine, provider=None, *, login_secret=None, encr
             raise HTTPException(401, "Invalid operator credentials")
         session_token = secrets.token_urlsafe(48)
         csrf_token = secrets.token_urlsafe(48)
+        session_seconds = 30 * 24 * 60 * 60 if item.remember_device else 12 * 60 * 60
         with Session(engine) as session:
             session.add(OperatorSession(session_hash=digest(session_token), csrf_hash=digest(csrf_token),
-                expires_at=now_utc() + timedelta(hours=12)))
+                expires_at=now_utc() + timedelta(seconds=session_seconds)))
             session.commit()
         response.set_cookie("operator_session", session_token, httponly=True, secure=True,
-            samesite="lax", max_age=12 * 3600, path="/")
+            samesite="lax", max_age=session_seconds, path="/")
         response.set_cookie("operator_csrf", csrf_token, httponly=False, secure=True,
-            samesite="strict", max_age=12 * 3600, path="/")
+            samesite="strict", max_age=session_seconds, path="/")
         # CSRF belongs only to this authenticated browser session. It is not a provider credential.
         return {"authenticated": True, "csrfToken": csrf_token}
 

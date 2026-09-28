@@ -23,6 +23,7 @@ export default function ConnectionGate() {
   const [phase,setPhase] = useState<'loading'|'login'|'connection'|'error'>('loading');
   const [connection,setConnection] = useState<State|null>(null);
   const [accessKey,setAccessKey] = useState('');
+  const [rememberDevice,setRememberDevice] = useState(true);
   const [message,setMessage] = useState('');
   const refresh = async () => {
     try {
@@ -83,7 +84,7 @@ export default function ConnectionGate() {
     event.preventDefault();setMessage('');
     try {
       await json('/v1/operator/login',{method:'POST',headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({access_key:accessKey})});
+        body:JSON.stringify({access_key:accessKey,remember_device:rememberDevice})});
       setAccessKey('');await refresh();
     } catch (error) {setMessage(error instanceof Error?error.message:'Falha ao entrar');}
   };
@@ -102,7 +103,10 @@ export default function ConnectionGate() {
   if (phase==='login') return <div className="connection-shell"><h1>AgentTikTok Shop</h1>
     <p>Entre como operador para continuar.</p><form onSubmit={event=>{void login(event)}}>
       <label>Chave de acesso do operador<input type="password" autoComplete="current-password" value={accessKey}
-        onChange={event=>setAccessKey(event.target.value)} required/></label><button className="connection-primary">Continuar</button>
+        onChange={event=>setAccessKey(event.target.value)} required/></label>
+      <label className="remember-device"><input type="checkbox" checked={rememberDevice}
+        onChange={event=>setRememberDevice(event.target.checked)}/><span>Manter conectado neste aparelho por 30 dias</span></label>
+      <button className="connection-primary">Continuar</button>
     </form>{message&&<p role="alert">{message}</p>}</div>;
   if (!connection?.connection || connection.connection.status==='REVOKED') return <div className="connection-shell">
     <h1>AgentTikTok Shop</h1><p>Conecte sua conta TikTok para começar.</p>

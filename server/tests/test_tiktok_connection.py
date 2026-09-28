@@ -97,6 +97,19 @@ def connect(client):
     return state
 
 
+def test_operator_login_remember_device_controls_session_lifetime(database):
+    client = browser(database, FakeProvider())
+    short = client.post("/v1/operator/login", json={"access_key": LOGIN})
+    assert short.status_code == 200
+    assert "max-age=43200" in short.headers["set-cookie"].lower()
+
+    client = browser(database, FakeProvider())
+    remembered = client.post("/v1/operator/login", json={"access_key": LOGIN, "remember_device": True})
+    assert remembered.status_code == 200
+    assert "max-age=2592000" in remembered.headers["set-cookie"].lower()
+    assert client.get("/v1/operator/session").json() == {"authenticated": True}
+
+
 def test_session_state_callback_secrets_and_restart(database):
     provider = FakeProvider()
     anonymous = browser(database, provider)
