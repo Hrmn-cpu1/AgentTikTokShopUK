@@ -143,9 +143,10 @@ def create_app(database_url: str | None = None, operator_token: str | None = Non
         row = TrendSignal(trend_id='trend-'+uuid4().hex, source=item.source, source_ref=item.source_ref,
             topic=item.topic, market='BR', language='pt-BR', metrics_json='{}', evidence=item.evidence,
             observed_at=item.observed_at.astimezone(timezone.utc))
+        trend_id = row.trend_id
         with Session(engine) as session:
             session.add(row); session.commit()
-        return {'trendId': row.trend_id, 'truth': 'OBSERVED_INPUT'}
+        return {'trendId': trend_id, 'truth': 'OBSERVED_INPUT'}
 
     @app.post('/v1/growth/niches', dependencies=[Depends(require_operator)])
     def record_growth_niche(item: GrowthNicheInput):
@@ -156,8 +157,9 @@ def create_app(database_url: str | None = None, operator_token: str | None = Non
             row = NicheHypothesis(niche_id='niche-'+uuid4().hex, market='BR', language='pt-BR',
                 hypothesis=item.hypothesis, trend_evidence=item.trend_id, production_cost_centavos=0,
                 risk='LOW', status='EXPLORING', created_at=datetime.now(timezone.utc))
+            niche_id, status = row.niche_id, row.status
             session.add(row); session.commit()
-        return {'nicheId': row.niche_id, 'status': row.status, 'truth': 'HYPOTHESIS'}
+        return {'nicheId': niche_id, 'status': status, 'truth': 'HYPOTHESIS'}
 
     @app.get("/health")
     def health():
