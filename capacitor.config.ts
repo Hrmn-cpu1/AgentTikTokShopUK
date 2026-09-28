@@ -1,6 +1,6 @@
 import type { CapacitorConfig } from '@capacitor/cli';
 
-const origin = process.env.ANDROID_APP_ORIGIN;
+const origin = process.env.ANDROID_APP_ORIGIN || 'https://tiktok-shop-profit-agent-uk-production.up.railway.app';
 if (origin) {
   const parsed = new URL(origin);
   if (parsed.protocol !== 'https:' || parsed.username || parsed.password || parsed.search || parsed.hash ||

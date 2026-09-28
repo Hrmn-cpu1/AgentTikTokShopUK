@@ -46,7 +46,7 @@ jobs:
           unzip -t "$apk" | tail -1
           test "$(unzip -l "$apk" | grep 'assets/public/index.html' | wc -l)" -eq 1
           "$ANDROID_HOME/build-tools/36.0.0/aapt" dump badging "$apk" > /tmp/apk-badging.txt
-          grep "^package: name='com.tiktokshopprofitagent.app' versionCode='1' versionName='1.0'" /tmp/apk-badging.txt
+          grep "^package: name='com.tiktokshopprofitagent.app' versionCode='2' versionName='1.1'" /tmp/apk-badging.txt
           grep "^uses-permission: name='android.permission.INTERNET'" /tmp/apk-badging.txt
           grep '^uses-permission:' /tmp/apk-badging.txt
           if grep -E '^uses-permission:.*(CONTACTS|LOCATION|CAMERA|RECORD_AUDIO|STORAGE|READ_MEDIA)' /tmp/apk-badging.txt; then
