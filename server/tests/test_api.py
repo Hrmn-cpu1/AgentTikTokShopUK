@@ -191,3 +191,16 @@ def test_settlement_five_cost_three_refund_two_revokes_first_pound_after_restart
     assert restarted.get("/v1/experiments/EXP-001/economics").json()["commercial_proof"]=="NOT_PROVEN"
     assert restarted.post("/v1/events",json=event("REFUNDED","refund-two","4.00",parent="settlement-one")).status_code==200
     assert restarted.get("/v1/portfolio").json()["experiments"][0]["realizedContributionGbp"]=="-4.00"
+
+
+def test_growth_niche_requires_observed_trend(database):
+    client_instance = client(database)
+    now=datetime.now(timezone.utc).isoformat()
+    missing=client_instance.post('/v1/growth/niches',json={'hypothesis':'acessorios para motociclistas','trend_id':'missing'})
+    assert missing.status_code==404
+    trend=client_instance.post('/v1/growth/trends',json={'source':'MANUAL_VERIFIED','source_ref':'evidence:trend:1','topic':'acessorios moto','evidence':'operator observed source','observed_at':now})
+    assert trend.status_code==200
+    assert trend.json()['truth']=='OBSERVED_INPUT'
+    niche=client_instance.post('/v1/growth/niches',json={'hypothesis':'testar conteudo educativo de acessorios','trend_id':trend.json()['trendId']})
+    assert niche.status_code==200
+    assert niche.json()['truth']=='HYPOTHESIS'

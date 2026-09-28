@@ -22,6 +22,7 @@ from .models import CommerceEvent, Experiment, ExperimentCost, ExperimentCostAdj
 from .connection_api import add_connection_routes, utc
 from .governance import add_governance_routes, capital_check, fresh, validate_launch
 from .video_studio import render_creator_video
+from .growth_models import TrendSignal, NicheHypothesis
 
 
 Money = Decimal
@@ -123,6 +124,42 @@ def create_app(database_url: str | None = None, operator_token: str | None = Non
             raise HTTPException(503, 'Não foi possível produzir o vídeo agora') from None
         return FileResponse(result, media_type='video/mp4', filename='agent-tiktok-shop-video.mp4',
                             background=BackgroundTask(cleanup))
+
+    class GrowthTrendInput(BaseModel):
+        source: str = Field(min_length=2, max_length=40)
+        source_ref: str = Field(min_length=3, max_length=1000)
+        topic: str = Field(min_length=2, max_length=300)
+        evidence: str = Field(min_length=3, max_length=4000)
+        observed_at: datetime
+
+    class GrowthNicheInput(BaseModel):
+        hypothesis: str = Field(min_length=3, max_length=2000)
+        trend_id: str = Field(min_length=1, max_length=100)
+
+    @app.post('/v1/growth/trends', dependencies=[Depends(require_operator)])
+    def record_growth_trend(item: GrowthTrendInput):
+        if item.observed_at.tzinfo is None:
+            raise HTTPException(422, 'observed_at needs an explicit timezone')
+        row = TrendSignal(trend_id='trend-'+uuid4().hex, source=item.source, source_ref=item.source_ref,
+            topic=item.topic, market='BR', language='pt-BR', metrics_json='{}', evidence=item.evidence,
+            observed_at=item.observed_at.astimezone(timezone.utc))
+        trend_id = row.trend_id
+        with Session(engine) as session:
+            session.add(row); session.commit()
+        return {'trendId': trend_id, 'truth': 'OBSERVED_INPUT'}
+
+    @app.post('/v1/growth/niches', dependencies=[Depends(require_operator)])
+    def record_growth_niche(item: GrowthNicheInput):
+        with Session(engine) as session:
+            trend = session.get(TrendSignal, item.trend_id)
+            if trend is None:
+                raise HTTPException(404, 'Trend evidence required')
+            row = NicheHypothesis(niche_id='niche-'+uuid4().hex, market='BR', language='pt-BR',
+                hypothesis=item.hypothesis, trend_evidence=item.trend_id, production_cost_centavos=0,
+                risk='LOW', status='EXPLORING', created_at=datetime.now(timezone.utc))
+            niche_id, status = row.niche_id, row.status
+            session.add(row); session.commit()
+        return {'nicheId': niche_id, 'status': status, 'truth': 'HYPOTHESIS'}
 
     @app.get("/health")
     def health():
