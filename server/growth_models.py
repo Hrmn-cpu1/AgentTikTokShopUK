@@ -103,6 +103,22 @@ class GrowthLearning(Base):
     next_mutation_json:Mapped[str]=mapped_column(Text,nullable=False)
     created_at:Mapped[datetime]=mapped_column(DateTime(timezone=True),nullable=False)
 
+class GrowthCreativeDNA(Base):
+    __tablename__="growth_creative_dna"
+    dna_id:Mapped[str]=mapped_column(String(36),primary_key=True)
+    creative_id:Mapped[str]=mapped_column(ForeignKey("growth_creatives.creative_id"),nullable=False,unique=True)
+    source_priority:Mapped[str]=mapped_column(String(40),nullable=False)
+    references_json:Mapped[str]=mapped_column(Text,nullable=False)
+    patterns_json:Mapped[str]=mapped_column(Text,nullable=False)
+    evidence_digest:Mapped[str]=mapped_column(String(64),nullable=False)
+    created_at:Mapped[datetime]=mapped_column(DateTime(timezone=True),nullable=False)
+    __table_args__=(
+        CheckConstraint("source_priority IN ('OWN_RESULTS_FIRST','PUBLIC_REFERENCE_PRIOR')",
+                        name="growth_creative_dna_priority"),
+        CheckConstraint("length(evidence_digest) = 64",name="growth_creative_dna_digest"),
+        Index("ix_growth_creative_dna_created","created_at"),
+    )
+
 class GrowthControl(Base):
     __tablename__="growth_control"
     control_id:Mapped[str]=mapped_column(String(20),primary_key=True)
