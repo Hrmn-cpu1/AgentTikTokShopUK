@@ -29,7 +29,6 @@ from .video_studio import render_creator_video
 from .growth_api import add_growth_routes
 from .growth_worker import run_growth_worker
 from .media_storage import MediaStorageError, RailwayVolumeMediaStore
-from .media_provenance import audit_durable_media_provenance
 
 
 Money = Decimal
@@ -122,11 +121,6 @@ def create_app(database_url: str | None = None, operator_token: str | None = Non
 
     add_governance_routes(app, engine, require_operator, require_manual_authority)
     add_growth_routes(app, engine, require_operator, trend_source=trend_source, media_store=media_store)
-
-    @app.on_event("startup")
-    def audit_media_provenance_on_startup():
-        # Read-only integrity telemetry: never mutates DB/media and never calls TikTok.
-        audit_durable_media_provenance(engine, media_store)
 
     # The DB queue is durable; this single in-process poller only executes leased jobs.
     worker_stop = threading.Event()

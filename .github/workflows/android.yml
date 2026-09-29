@@ -1,0 +1,67 @@
+name: Android Debug APK
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      ANDROID_APP_ORIGIN: ${{ vars.ANDROID_APP_ORIGIN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: 'platform-tools platforms;android-36 build-tools;36.0.0'
+      - run: npm ci
+      - run: npm run typecheck && npm test && npm run build
+      - name: Check bundled assets and configuration
+        run: |
+          if grep -REn 'TIKTOK_CLIENT_SECRET|OPERATOR_API_TOKEN|TIKTOK_TOKEN_ENCRYPTION_KEY|DATABASE_URL' dist; then
+            echo 'Server credential reference found in bundled frontend' >&2
+            exit 1
+          fi
+          test -f dist/index.html
+          test -f android/app/src/main/AndroidManifest.xml
+          if grep -Fq 'android:path="/v1/tiktok/callback"' android/app/src/main/AndroidManifest.xml; then
+            echo 'HTTPS callback must reach Railway for server-side Web OAuth exchange' >&2
+            exit 1
+          fi
+      - run: npx cap sync android
+      - name: Build debug APK
+        working-directory: android
+        run: bash ./gradlew --no-daemon assembleDebug
+      - name: Verify APK identity and permissions
+        run: |
+          apk=android/app/build/outputs/apk/debug/app-debug.apk
+          test -s "$apk"
+          unzip -t "$apk" | tail -1
+          test "$(unzip -l "$apk" | grep 'assets/public/index.html' | wc -l)" -eq 1
+          "$ANDROID_HOME/build-tools/36.0.0/aapt" dump badging "$apk" > /tmp/apk-badging.txt
+          grep "^package: name='com.tiktokshopprofitagent.app' versionCode='4' versionName='1.3'" /tmp/apk-badging.txt
+          "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --print-certs "$apk" | grep -E 'Signer #1 certificate (MD5|SHA-256) digest'
+          grep -q "AUTH_SDK_VERSION.*2.3.1" android/tiktok-open-sdk/auth/build.gradle
+          grep "^uses-permission: name='android.permission.INTERNET'" /tmp/apk-badging.txt
+          grep '^uses-permission:' /tmp/apk-badging.txt
+          if grep -E '^uses-permission:.*(CONTACTS|LOCATION|CAMERA|RECORD_AUDIO|STORAGE|READ_MEDIA)' /tmp/apk-badging.txt; then
+            echo 'Unexpected sensitive Android permission' >&2
+            exit 1
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: agenttiktok-shop-br-android-debug
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 14

@@ -1,0 +1,28 @@
+# One-operator production boundary. Creating resources requires the owner's Render account.
+services:
+  - type: web
+    name: tiktok-shop-profit-agent-uk
+    runtime: docker
+    plan: 0.5c-512mb
+    region: frankfurt
+    healthCheckPath: /ready
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: tiktok-shop-profit-agent-postgres
+          property: connectionString
+      - key: OPERATOR_API_TOKEN
+        generateValue: true
+      - key: OPERATOR_LOGIN_SECRET
+        generateValue: true
+      - key: TIKTOK_TOKEN_ENCRYPTION_KEY
+        generateValue: true
+# TikTok Client Key, Client Secret and exact HTTPS callback are configured later,
+# directly in Render's secret environment after Login Kit registration.
+databases:
+  - name: tiktok-shop-profit-agent-postgres
+    plan: 0.1c-256mb
+    region: frankfurt
+    postgresMajorVersion: '16'
+    diskSizeGB: 1
+    ipAllowList: []
