@@ -223,6 +223,7 @@ def test_postgres_action_effect_outbox_atomicity_idempotency_and_fencing(tmp_pat
             lease_owner=worker_id, lease_until=now + timedelta(minutes=2), lease_acquired_at=now,
             heartbeat_at=now, lease_generation=1, lease_attempt_id=job_attempt_id,
             revision=1, created_at=now, updated_at=now))
+        session.flush()
         session.add(GrowthMediaArtifact(artifact_id=artifact_id, creative_id=creative_id,
             experiment_id=experiment_id, render_job_id=job_id, source_render_attempt="try-1-ci",
             storage_provider="RAILWAY_VOLUME", object_key=object_key, staging_key=f".staging/ci/{suffix}",
