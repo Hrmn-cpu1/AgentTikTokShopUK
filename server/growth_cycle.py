@@ -284,8 +284,8 @@ def run_growth_cycle(engine, source, *, trigger: str = "MANUAL") -> dict:
         learned_hook = mutation.get("to") if mutation else creative_dna.get("patterns", {}).get("hook", {}).get("familyHint")
         if learned_hook:
             hook_family = str(learned_hook)
-            learning_id = learning.learning_id
-            mutation_mode = "EVIDENCE_BACKED_HYPOTHESIS"
+            learning_id = learning.learning_id if learning is not None else None
+            mutation_mode = "EVIDENCE_BACKED_HYPOTHESIS" if learning is not None else "OWN_RESULTS_MEMORY"
         else:
             hook_family = choose_hook_family(candidate, dict(hook_counts))
             learning_id = None
