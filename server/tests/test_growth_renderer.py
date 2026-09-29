@@ -26,10 +26,13 @@ def test_growth_plan_renders_vertical_mp4_audio_captions_manifest_and_thumbnail(
         manifest = json.loads((tmp_path / "manifest.json").read_text())
         assert manifest["aspectRatio"] == "9:16" and manifest["sha256"] == digest
         assert manifest["sourceEvidence"]["source"] == "PUBLIC_FIXTURE"
-        assert manifest["rendererVersion"] == "2.2.0"
+        assert manifest["rendererVersion"] == "2.3.0"
         assert manifest["sceneCount"] == 3 and manifest["sceneTransitions"] == 2
         assert manifest["animatedCropZoom"] and manifest["humanChosenPhotoUsed"] is False
-        assert manifest["narrationGenerated"] == bool(__import__("shutil").which("espeak-ng"))
+        assert manifest["narrationGenerated"] is True
+        assert manifest["tts"]["provider"] == "PIPER_LOCAL_NEURAL"
+        assert manifest["tts"]["voice"] == "pt_BR-faber-medium"
+        assert manifest["qualityGate"]["checks"]["production_tts"]["passed"] is True
         captions = (tmp_path / "captions.pt-BR.srt").read_text()
         assert captions.count(" --> ") == 3
         assert "\n\n" in captions and "Sinal público; TikTok UNKNOWN." in captions
