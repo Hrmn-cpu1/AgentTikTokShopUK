@@ -1,7 +1,9 @@
 from datetime import datetime, timezone
+import json
+from pathlib import Path
 
 from server.growth_brain import TrendCandidate, build_creative_plan
-from server.growth_policy import evaluate_policy, originality_signature
+from server.growth_policy import POLICY_PACK_VERSION, evaluate_policy, originality_signature
 
 
 def manifest(status="QUALITY_PASS"):
@@ -59,3 +61,18 @@ def test_quality_review_never_becomes_policy_pass():
     result = evaluate_policy(plan(), manifest("QUALITY_REVIEW"), set())
     assert result["policyStatus"] == "POLICY_REVIEW"
     assert "QUALITY_NOT_PASS" in result["reasons"]
+
+
+def test_versioned_brazil_policy_pack_matches_runtime_invariants():
+    root = Path(__file__).resolve().parents[2]
+    pack = json.loads((root / "server/policy_packs/br_creator_growth_v1.json").read_text(encoding="utf-8"))
+    assert pack["version"] == POLICY_PACK_VERSION
+    assert pack["content"]["original_required"] is True
+    assert pack["content"]["fake_engagement_allowed"] is False
+    assert pack["content"]["private_tiktok_api_allowed"] is False
+    assert pack["truth"]["unknown_equals_zero"] is False
+    assert pack["truth"]["handoff_equals_publication"] is False
+    assert pack["truth"]["owner_reported_equals_provider_verified"] is False
+    assert pack["truth"]["single_video_equals_learning"] is False
+    assert pack["publication"]["autonomous_publish_allowed"] is False
+    assert pack["goal"]["followers"] == 1000
