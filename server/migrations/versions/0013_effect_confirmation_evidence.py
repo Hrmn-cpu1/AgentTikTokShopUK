@@ -2,7 +2,7 @@
 from alembic import op
 import sqlalchemy as sa
 
-revision = "0013_effect_confirmation_evidence"
+revision = "0013_effect_confirm_link"
 down_revision = "0012_action_effect_outbox"
 branch_labels = None
 depends_on = None
