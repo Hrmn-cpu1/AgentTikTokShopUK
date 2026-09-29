@@ -107,7 +107,7 @@ class GrowthControl(Base):
     __tablename__="growth_control"
     control_id:Mapped[str]=mapped_column(String(20),primary_key=True)
     mode:Mapped[str]=mapped_column(String(20),nullable=False,default="READY")
-    scheduler_enabled:Mapped[bool]=mapped_column(Boolean,nullable=False,default=False,server_default="false")
+    scheduler_enabled:Mapped[bool]=mapped_column(Boolean,nullable=False,default=True,server_default="true")
     scheduler_interval_seconds:Mapped[int]=mapped_column(Integer,nullable=False,default=300,server_default="300")
     daily_experiment_quota:Mapped[int]=mapped_column(Integer,nullable=False,default=3,server_default="3")
     daily_handoff_quota:Mapped[int]=mapped_column(Integer,nullable=False,default=3,server_default="3")
