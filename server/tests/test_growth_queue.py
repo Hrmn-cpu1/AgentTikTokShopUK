@@ -12,7 +12,8 @@ from server.growth_worker import claim_due_job, enqueue_job
 from server.growth_worker import finish_internal_job, renew_lease, _capture_lease, _LeaseHeartbeat, LeaseLostError
 from server.growth_brain import TrendCandidate, build_creative_plan, canonical_plan
 from server.media_storage import RailwayVolumeMediaStore
-from server.growth_models import GrowthMediaArtifact
+from server.growth_models import GrowthMediaArtifact, GrowthPolicyAssessment
+from server.delivery_models import DeliveryEffect
 
 
 def queue_db(tmp_path):
@@ -203,6 +204,14 @@ def test_worker_advances_real_render_and_stops_at_action_required(tmp_path):
         assert creative.state == ("READY" if artifact.quality_status == "QUALITY_PASS" else "BLOCKED")
         assert creative.media_hash and len(creative.media_hash) == 64
         assert creative.quality_status in {"QUALITY_PASS", "QUALITY_REVIEW"}
+        if creative.quality_status == "QUALITY_PASS":
+            assert creative.policy_status == "POLICY_PASS"
+            assessment = session.scalar(select(GrowthPolicyAssessment).where(
+                GrowthPolicyAssessment.creative_id == creative_id))
+            assert assessment is not None and assessment.originality_status == "ORIGINAL"
+            delivery = session.scalar(select(DeliveryEffect).where(
+                DeliveryEffect.creative_id == creative_id))
+            assert delivery is not None and delivery.state == "PREPARED"
         assert creative.creative_learning_eligible is False
         assert creative.style_baseline_eligible is False
         assert control.mode == "ACTION_REQUIRED"
