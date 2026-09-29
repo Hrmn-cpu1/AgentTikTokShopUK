@@ -14,6 +14,8 @@ import com.getcapacitor.annotation.CapacitorPlugin;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 
 @CapacitorPlugin(name = "TikTokShare")
 public class TikTokSharePlugin extends Plugin {
@@ -38,7 +40,20 @@ public class TikTokSharePlugin extends Plugin {
             return;
         }
 
-        File video = new File(getContext().getCacheDir(), "agent-tiktok-share.mp4");
+        final String sha256;
+        try {
+            sha256 = sha256(bytes);
+        } catch (NoSuchAlgorithmException error) {
+            call.reject("Não foi possível validar o vídeo");
+            return;
+        }
+
+        File shareDir = new File(getContext().getCacheDir(), "share");
+        if ((!shareDir.exists() && !shareDir.mkdirs()) || !shareDir.isDirectory()) {
+            call.reject("Não foi possível preparar a área segura de compartilhamento");
+            return;
+        }
+        File video = new File(shareDir, "agent-tiktok-share.mp4");
         try (FileOutputStream stream = new FileOutputStream(video, false)) {
             stream.write(bytes);
             stream.flush();
@@ -60,9 +75,7 @@ public class TikTokSharePlugin extends Plugin {
             send.setPackage(tiktokPackage);
             try {
                 getActivity().startActivity(send);
-                JSObject result = new JSObject();
-                result.put("state", "TIKTOK_INTENT_STARTED");
-                call.resolve(result);
+                call.resolve(handoffResult("TIKTOK_INTENT_STARTED", sha256));
                 return;
             } catch (ActivityNotFoundException ignored) {
                 send.setPackage(null);
@@ -70,12 +83,28 @@ public class TikTokSharePlugin extends Plugin {
         }
         try {
             getActivity().startActivity(Intent.createChooser(send, "Compartilhar vídeo"));
-            JSObject result = new JSObject();
-            result.put("state", "SHARE_CHOOSER_OPENED");
-            call.resolve(result);
+            call.resolve(handoffResult("SHARE_CHOOSER_OPENED", sha256));
         } catch (ActivityNotFoundException error) {
             call.reject("Nenhum aplicativo disponível para compartilhar vídeo");
         }
+    }
+
+    private JSObject handoffResult(String state, String sha256) {
+        JSObject result = new JSObject();
+        result.put("state", state);
+        result.put("artifactSha256", sha256);
+        result.put("observedAtEpochMs", System.currentTimeMillis());
+        return result;
+    }
+
+    private String sha256(byte[] bytes) throws NoSuchAlgorithmException {
+        MessageDigest digest = MessageDigest.getInstance("SHA-256");
+        byte[] hash = digest.digest(bytes);
+        StringBuilder value = new StringBuilder(hash.length * 2);
+        for (byte item : hash) {
+            value.append(String.format("%02x", item & 0xff));
+        }
+        return value.toString();
     }
 
     private String findTikTokPackage() {
