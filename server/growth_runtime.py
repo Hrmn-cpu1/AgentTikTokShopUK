@@ -28,8 +28,7 @@ def _day_bounds(now: datetime):
 
 
 def scheduler_enabled(control: GrowthControl) -> bool:
-    import os
-    return bool(control.scheduler_enabled or os.environ.get("GROWTH_SCHEDULER_ENABLED") == "1")
+    return bool(control.scheduler_enabled)
 
 
 def quota_snapshot(session: Session, control: GrowthControl, now: datetime | None = None) -> dict:
