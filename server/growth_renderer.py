@@ -292,7 +292,7 @@ def render_growth_plan(plan_json: str, output_dir: str | Path | None = None,
         black_intervals = re.findall(r"black_start:[0-9.]+ black_end:[0-9.]+ black_duration:([0-9.]+)", blank_scan.stderr)
         blank_check = "FAIL" if blank_scan.returncode != 0 or any(float(item) >= 0.6 for item in black_intervals) else "PASS"
         manifest = {
-            "rendererVersion": "2.2.0", "format": "mp4", "videoCodec": "h264", "audioCodec": "aac",
+            "rendererVersion": "2.3.0", "format": "mp4", "videoCodec": "h264", "audioCodec": "aac",
             "audioDescription": "Piper neural Brazilian Portuguese narration plus original low-volume tone bed",
             "narrationGenerated": True, "narrationLanguage": "pt-BR", "tts": tts_meta, "width": WIDTH,
             "height": HEIGHT, "aspectRatio": "9:16", "durationSeconds": round(duration_total, 2), "fps": FPS,
