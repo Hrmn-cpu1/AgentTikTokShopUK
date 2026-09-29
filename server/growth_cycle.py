@@ -145,9 +145,13 @@ def _rank_candidates(source, now: datetime):
     except Exception as exc:
         raise CycleBlocked("TREND_SOURCE_UNAVAILABLE",
                            f"Trend source unavailable: {type(exc).__name__}", status=503) from None
+    # Source collection happens after the caller captured `now`; use a fresh
+    # wall-clock reading so an item timestamped during collection is not rejected
+    # as microscopically "from the future".
+    freshness_now = max(now, utcnow())
     fresh = [item for item in candidates if item.market == "BR"
              and item.observed_at.tzinfo is not None
-             and 0 <= (now - item.observed_at.astimezone(timezone.utc)).total_seconds() <= 48 * 3600]
+             and 0 <= (freshness_now - item.observed_at.astimezone(timezone.utc)).total_seconds() <= 48 * 3600]
     if not fresh:
         raise CycleBlocked("NO_FRESH_BR_SIGNAL", "No fresh public Brazil trend signals", status=503)
     ranked = sorted(((rank_public_signal(item, now), item) for item in fresh),
