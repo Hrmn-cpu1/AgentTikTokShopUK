@@ -91,7 +91,12 @@ def add_growth_routes(app, engine, require_operator, trend_source=None, media_st
         return control
 
 
+    def scheduler_runtime_enabled(control):
+        return scheduler_enabled(control) and os.environ.get("GROWTH_SCHEDULER_ENABLED") == "1"
+
     def scheduler_label(control):
+        if os.environ.get("GROWTH_SCHEDULER_ENABLED") != "1":
+            return "NOT_CONFIGURED"
         return "ENABLED_SAFE_HUMAN_GATE" if scheduler_enabled(control) else "DISABLED_SAFE"
 
     scheduler_stop = threading.Event()
@@ -294,7 +299,7 @@ def add_growth_routes(app, engine, require_operator, trend_source=None, media_st
             control = control_row(session)
             if delivery is not None and delivery.state == "HANDOFF_INITIATED" and control.mode == "ACTION_REQUIRED":
                 old_control = control.mode
-                control.mode = "RUNNING" if scheduler_enabled(control) else "READY"
+                control.mode = "RUNNING" if scheduler_runtime_enabled(control) else "READY"
                 control.updated_at = datetime.now(timezone.utc)
                 record_transition(session, old_control, control.mode,
                     "human publication observation recorded; publication remains OWNER_REPORTED",
@@ -534,7 +539,7 @@ def add_growth_routes(app, engine, require_operator, trend_source=None, media_st
             return {"control": {"mode": control.mode, "updatedAt": control.updated_at.isoformat(),
                     "execution": "SERVER_WORKER" if os.environ.get("GROWTH_WORKER_ENABLED") == "1" else "SERVER_QUEUE_ONLY",
                     "scheduler": scheduler_label(control),
-                    "schedulerEnabled": scheduler_enabled(control),
+                    "schedulerEnabled": scheduler_runtime_enabled(control),
                     "schedulerIntervalSeconds": control.scheduler_interval_seconds},
                 "quota": quotas,
                 "identity": {"status": "AVAILABLE" if connection and connection.status == "ACTIVE" else "UNKNOWN",
@@ -543,10 +548,10 @@ def add_growth_routes(app, engine, require_operator, trend_source=None, media_st
                 "capabilities": {"discover": "REAL_PUBLIC_BR_SIGNAL", "analyze": "REAL_EVIDENCE_BOUNDED",
                     "create": "REAL_ORIGINAL_PLAN", "render": "REAL",
                     "originalityPolicy": "REAL_GATE", "delivery": "MANUAL_HANDOFF",
-                    "autonomousPublish": "NOT_ALLOWED",
+                    "autonomousPublish": "NOT_PROVEN",
                     "observe": "NOT_PROVEN" if not observations_count else "OWNER_REPORTED",
                     "learn": "NOT_PROVEN" if not learnings else "EVIDENCE_GATED",
-                    "repeat": "SAFE_SCHEDULER" if scheduler_enabled(control) else "AVAILABLE_DISABLED"},
+                    "repeat": "SAFE_SCHEDULER" if scheduler_runtime_enabled(control) else "NOT_PROVEN"},
                 "currentActivity": current_activity,
                 "currentJob": None if not current_job else {"jobId": current_job.job_id,
                     "type": current_job.job_type,
@@ -717,7 +722,8 @@ def add_growth_routes(app, engine, require_operator, trend_source=None, media_st
             last_tick = session.scalar(select(GrowthSchedulerTick).order_by(
                 GrowthSchedulerTick.observed_at.desc()).limit(1))
             session.commit()
-            return {"enabled": scheduler_enabled(control), "mode": scheduler_label(control),
+            return {"enabled": scheduler_enabled(control),
+                "runtimeEnabled": scheduler_runtime_enabled(control), "mode": scheduler_label(control),
                 "intervalSeconds": control.scheduler_interval_seconds,
                 "dailyExperimentQuota": control.daily_experiment_quota,
                 "dailyHandoffQuota": control.daily_handoff_quota,
@@ -743,7 +749,8 @@ def add_growth_routes(app, engine, require_operator, trend_source=None, media_st
             control.follower_goal = item.follower_goal
             control.updated_at = datetime.now(timezone.utc)
             session.commit()
-            return {"enabled": scheduler_enabled(control), "mode": scheduler_label(control),
+            return {"enabled": scheduler_enabled(control),
+                "runtimeEnabled": scheduler_runtime_enabled(control), "mode": scheduler_label(control),
                 "intervalSeconds": control.scheduler_interval_seconds,
                 "dailyExperimentQuota": control.daily_experiment_quota,
                 "dailyHandoffQuota": control.daily_handoff_quota,
