@@ -58,6 +58,23 @@ def choose_hook_family(candidate: TrendCandidate, existing_counts: dict[str, int
     return choices[seed % len(choices)]
 
 
+def _hook_narration(family: str) -> str:
+    """Short natural spoken hooks; on-screen text may retain topic specificity."""
+    options = {
+        "curiosity": "Por que isso chama atenção?",
+        "unexpected_fact": "Tem um detalhe inesperado aqui.",
+        "challenge": "Você explica isso em dez segundos?",
+        "comparison": "Sinal de busca ou fato?",
+        "visual_surprise": "Olha isso por outro ângulo.",
+        "question": "Por que isso está em alta?",
+        "contrarian_angle": "Busca alta não prova nada.",
+        "before_after": "Antes de compartilhar, pare.",
+        "mini_story": "Uma busca trouxe esta pergunta.",
+        "open_loop": "Tem um detalhe que muda tudo.",
+    }
+    return options[family]
+
+
 def _hook_text(topic: str, family: str) -> str:
     short = topic if len(topic) <= 32 else topic[:29].rsplit(" ", 1)[0] + "…"
     templates = {
@@ -111,7 +128,7 @@ def build_creative_plan(candidate: TrendCandidate, niche: str, hook_family: str 
         "hook": hook,
         "script": script,
         "scenePlan": [
-            {"seconds": float(scene_seconds[0]), "hook": True, "text": hook, "narration": hook, "visual": "orbiting original vector animation", "visualLabel": "GANCHO · PERGUNTA"},
+            {"seconds": float(scene_seconds[0]), "hook": True, "text": hook, "narration": _hook_narration(hook_family), "visual": "orbiting original vector animation", "visualLabel": "GANCHO · PERGUNTA"},
             {"seconds": float(scene_seconds[1]), "text": script[0], "narration": f"O assunto {short_topic} apareceu nas buscas em alta no Brasil.", "visual": "animated rising search signal", "visualLabel": "SINAL DE BUSCA · BR"},
             {"seconds": float(scene_seconds[2]), "text": script[1], "narration": script[1], "visual": "original animated comparison graphic", "visualLabel": "LEITURA CRÍTICA"},
             {"seconds": float(scene_seconds[3]), "text": script[2], "narration": "Antes de compartilhar, confira a data, a fonte original e o contexto.", "visual": "animated source-check checklist", "visualLabel": "TRÊS CHECAGENS"},
