@@ -95,7 +95,7 @@ def test_auth_and_missing_publication_fail_closed(database):
     assert c.post("/v1/events", json=event("REFUNDED", "refund-1")).status_code == 422
 
 
-def test_public_trend_to_original_mp4_is_idempotent_and_does_not_claim_delivery(database):
+def test_public_trend_to_original_mp4_is_idempotent_and_does_not_claim_delivery(database, tmp_path):
     from server.trend_sources import TrendEvidence
     now = datetime.now(timezone.utc)
     class FixtureTrendSource:
@@ -104,7 +104,10 @@ def test_public_trend_to_original_mp4_is_idempotent_and_does_not_claim_delivery(
                 "https://example.test/public-rss", "BR", "BR_SIGNAL", "UNKNOWN", now, now,
                 {"google_approx_traffic_raw":"2,000+", "views":None, "likes":None, "comments":None, "shares":None},
                 "public fixture evidence; not TikTok metrics")]
-    app = create_app(database, TOKEN, trend_source=FixtureTrendSource())
+    from server.media_storage import RailwayVolumeMediaStore
+    media_store = RailwayVolumeMediaStore(tmp_path / "media-volume", max_artifact_bytes=64 * 1024 * 1024,
+                                          max_total_bytes=128 * 1024 * 1024)
+    app = create_app(database, TOKEN, trend_source=FixtureTrendSource(), media_store=media_store)
     c = TestClient(app, headers={"Authorization": f"Bearer {TOKEN}"})
     first = c.post("/v1/growth/run")
     assert first.status_code == 200, first.text
@@ -117,13 +120,11 @@ def test_public_trend_to_original_mp4_is_idempotent_and_does_not_claim_delivery(
     retry = c.post("/v1/growth/run")
     assert retry.status_code == 200 and retry.json()["duplicate"] is True
     media = c.get(payload["videoUrl"])
-    assert media.status_code == 200 and media.headers["content-type"].startswith("video/mp4")
-    assert len(media.content) > 1000
-    assert media.headers["x-delivery-state"] == "LOCAL_RENDERED"
+    assert media.status_code == 409  # GET cannot secretly create a new, untracked render.
     from server.growth_models import GrowthCreative
     with Session(create_engine(database)) as session:
         creative = session.get(GrowthCreative, payload["creativeId"])
-        assert creative.state == "READY" and creative.media_hash == media.headers["x-creative-sha256"]
+        assert creative.state == "SCRIPTED" and creative.media_hash is None
 
 
 def test_observation_keeps_fourteen_views_out_of_learning_and_public_feed(database):
@@ -137,8 +138,6 @@ def test_observation_keeps_fourteen_views_out_of_learning_and_public_feed(databa
     app = create_app(database, TOKEN, trend_source=FixtureTrendSource())
     c = TestClient(app, headers={"Authorization": f"Bearer {TOKEN}"})
     result = c.post("/v1/growth/run").json()
-    rendered = c.get(result["videoUrl"])
-    assert rendered.status_code == 200
     observation = {"observation_id":"obs-14-views","creative_id":result["creativeId"],
         "source":"OWNER_TIKTOK_UI","publication_identity":"https://vt.tiktok.com/example123",
         "truth_classification":"OWNER_REPORTED","evidence_ref":"operator-supplied-screen:obs-14",
@@ -148,7 +147,7 @@ def test_observation_keeps_fourteen_views_out_of_learning_and_public_feed(databa
     assert response.status_code==200
     assert response.json()["truth"]=="OWNER_REPORTED"
     assert response.json()["learningEligibility"]=="OBSERVED_BUT_NOT_LEARNING_ELIGIBLE"
-    assert response.json()["exclusionReason"]=="INSUFFICIENT_SAMPLE_VIEWS"
+    assert response.json()["exclusionReason"]=="QUALITY_GATE_NOT_PASSED"
     assert response.json()["learning"]["verdict"]=="INSUFFICIENT_EVIDENCE"
     assert c.post("/v1/growth/observations",json=observation).json()["duplicate"] is True
     public = TestClient(app).get("/v1/public/mrwho/feed")
@@ -186,11 +185,12 @@ def test_growth_workspace_reads_server_truth_and_controls(database):
     assert c.post("/v1/growth/control", json={"action": "NOT_A_CONTROL"}).status_code == 422
 
 
-def test_mobile_start_worker_ready_media_and_video_contract(database):
+def test_mobile_start_worker_ready_media_and_video_contract(database, tmp_path):
     """Protect the mobile START -> queued worker -> READY -> overview/video path."""
     from sqlalchemy import select
     from server.growth_models import GrowthCreative, GrowthStateTransition
     from server.growth_worker import claim_due_job, finish_internal_job
+    from server.media_storage import RailwayVolumeMediaStore
     from server.trend_sources import TrendEvidence
 
     now = datetime.now(timezone.utc)
@@ -202,7 +202,9 @@ def test_mobile_start_worker_ready_media_and_video_contract(database):
                 {"views": None, "likes": None, "comments": None, "shares": None},
                 "mobile contract fixture; no TikTok metrics")]
 
-    c = TestClient(create_app(database, TOKEN, trend_source=FixtureTrendSource()),
+    media_store = RailwayVolumeMediaStore(tmp_path / "media-volume", max_artifact_bytes=64 * 1024 * 1024,
+                                          max_total_bytes=128 * 1024 * 1024)
+    c = TestClient(create_app(database, TOKEN, trend_source=FixtureTrendSource(), media_store=media_store),
         headers={"Authorization": f"Bearer {TOKEN}"})
     started = c.post("/v1/growth/control", json={"action": "START"})
     assert started.status_code == 200
@@ -217,26 +219,32 @@ def test_mobile_start_worker_ready_media_and_video_contract(database):
         assert finish_internal_job(session, prepare) == "SUCCEEDED"
         render = claim_due_job(session, "mobile-contract-test")
         assert render is not None and render.job_type == "RENDER_VIDEO"
-        assert finish_internal_job(session, render) == "SUCCEEDED"
+        assert finish_internal_job(session, render, media_store=media_store) == "SUCCEEDED"
 
         creative = session.get(GrowthCreative, creative_id)
-        assert creative is not None and creative.state == "READY"
+        assert creative is not None
         assert creative.quality_status in {"QUALITY_PASS", "QUALITY_REVIEW"}
         transitions = session.scalars(select(GrowthStateTransition).where(
             GrowthStateTransition.experiment_id == experiment_id)).all()
         transition_pairs = {(row.source_state, row.target_state) for row in transitions}
-        assert {("ASSETS_PENDING", "RENDERING"), ("RENDERING", "READY")} <= transition_pairs
+        assert ("ASSETS_PENDING", "RENDERING") in transition_pairs
+        assert ("RENDERING", creative.state) in transition_pairs
 
     overview = c.get("/v1/growth/overview").json()
     assert overview["control"]["mode"] == "ACTION_REQUIRED"
     media = next(item for item in overview["media"] if item["creativeId"] == creative_id)
     assert len(media["mediaHash"]) == 64
+    assert media["storageState"] == "STORED_VERIFIED"
+    assert media["mediaReady"] is (creative.quality_status == "QUALITY_PASS")
 
     response = c.get(media["videoUrl"])
-    assert response.status_code == 200
-    assert response.headers["content-type"].startswith("video/mp4")
-    assert len(response.content) > 1000
-    assert response.headers["x-delivery-state"] == "LOCAL_RENDERED"
+    if media["mediaReady"]:
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("video/mp4")
+        assert len(response.content) > 1000
+        assert response.headers["x-media-state"] == "MEDIA_READY"
+    else:
+        assert response.status_code == 409
     assert overview["capabilities"]["autonomousPublish"] == "NOT_PROVEN"
     assert overview["capabilities"]["observe"] == "NOT_PROVEN"
     assert overview["capabilities"]["learn"] == "NOT_PROVEN"

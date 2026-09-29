@@ -11,6 +11,8 @@ from server.growth_queue_models import GrowthJob, utcnow
 from server.growth_worker import claim_due_job, enqueue_job
 from server.growth_worker import finish_internal_job
 from server.growth_brain import TrendCandidate, build_creative_plan, canonical_plan
+from server.media_storage import RailwayVolumeMediaStore
+from server.growth_models import GrowthMediaArtifact
 
 
 def queue_db(tmp_path):
@@ -79,6 +81,19 @@ def test_paused_control_prevents_worker_claim(tmp_path):
         assert session.scalar(select(GrowthJob.state)) == "PENDING"
 
 
+def test_render_jobs_are_not_claimed_without_durable_storage(tmp_path):
+    engine, creative_id = queue_db(tmp_path)
+    now = utcnow()
+    with Session(engine) as session:
+        job = GrowthJob(job_id="needs-volume", creative_id=creative_id, job_type="RENDER_VIDEO",
+            idempotency_key="needs-volume", state="PENDING", attempts=0,
+            available_at=now, created_at=now, updated_at=now)
+        session.add(job)
+        session.commit()
+        assert claim_due_job(session, "worker-without-volume", media_storage_available=False) is None
+        assert session.get(GrowthJob, job.job_id).state == "PENDING"
+
+
 def test_worker_advances_real_render_and_stops_at_action_required(tmp_path):
     engine, creative_id = queue_db(tmp_path)
     with Session(engine) as session:
@@ -87,6 +102,7 @@ def test_worker_advances_real_render_and_stops_at_action_required(tmp_path):
         creative.plan_json = canonical_plan(build_creative_plan(TrendCandidate(
             topic=trend.topic, source=trend.source, source_ref=trend.source_ref,
             evidence=trend.evidence, metrics={}), "curiosidades"))
+        creative.state = "ASSETS_PENDING"
         control = session.get(GrowthControl, "default")
         control.mode = "RUNNING"
         first = enqueue_job(session, creative_id, "PREPARE_ASSETS")
@@ -100,10 +116,19 @@ def test_worker_advances_real_render_and_stops_at_action_required(tmp_path):
 
         render_job = claim_due_job(session, "worker-test")
         assert render_job and render_job.job_type == "RENDER_VIDEO"
-        assert finish_internal_job(session, render_job) == "SUCCEEDED"
+        media_store = RailwayVolumeMediaStore(tmp_path / "media-volume", max_artifact_bytes=64 * 1024 * 1024,
+                                              max_total_bytes=128 * 1024 * 1024)
+        assert finish_internal_job(session, render_job, media_store=media_store) == "SUCCEEDED"
         session.refresh(creative)
         session.refresh(control)
-        assert creative.state == "READY"
+        artifact = session.scalar(select(GrowthMediaArtifact).where(
+            GrowthMediaArtifact.creative_id == creative_id))
+        assert artifact is not None
+        assert artifact.storage_state == "STORED_VERIFIED"
+        assert artifact.sha256 == creative.media_hash
+        assert media_store.verify_object(artifact.object_key, expected_sha256=artifact.sha256,
+            expected_size_bytes=artifact.size_bytes).path.is_file()
+        assert creative.state == ("READY" if artifact.quality_status == "QUALITY_PASS" else "BLOCKED")
         assert creative.media_hash and len(creative.media_hash) == 64
         assert creative.quality_status in {"QUALITY_PASS", "QUALITY_REVIEW"}
         assert creative.creative_learning_eligible is False
@@ -111,3 +136,53 @@ def test_worker_advances_real_render_and_stops_at_action_required(tmp_path):
         assert control.mode == "ACTION_REQUIRED"
         assert session.scalar(select(PublicationIntent.publication_intent_id)) is None
         assert claim_due_job(session, "worker-test") is None
+
+
+def test_restart_reconciles_same_artifact_without_rerender(tmp_path, monkeypatch):
+    from server.growth_models import GrowthMediaArtifact
+    from server.media_storage import RailwayVolumeMediaStore
+    import server.growth_worker as worker
+
+    engine, creative_id = queue_db(tmp_path)
+    store = RailwayVolumeMediaStore(tmp_path / "persistent-volume", max_artifact_bytes=64 * 1024 * 1024,
+                                    max_total_bytes=128 * 1024 * 1024)
+    with Session(engine) as session:
+        creative = session.get(GrowthCreative, creative_id)
+        trend = session.get(TrendSignal, creative.trend_id)
+        creative.plan_json = canonical_plan(build_creative_plan(TrendCandidate(
+            topic=trend.topic, source=trend.source, source_ref=trend.source_ref,
+            evidence=trend.evidence, metrics={}), "curiosidades"))
+        creative.state = "ASSETS_PENDING"
+        session.get(GrowthControl, "default").mode = "RUNNING"
+        render = GrowthJob(job_id="restart-render-job", creative_id=creative_id,
+            job_type="RENDER_VIDEO", idempotency_key="restart-render-job", state="RUNNING",
+            attempts=1, available_at=utcnow(), lease_owner="old-worker",
+            lease_until=utcnow()+timedelta(minutes=1), created_at=utcnow(), updated_at=utcnow())
+        session.add(render)
+        session.commit()
+        assert worker.finish_internal_job(session, render, media_store=store) == "SUCCEEDED"
+        artifact = session.scalar(select(GrowthMediaArtifact).where(
+            GrowthMediaArtifact.render_job_id == render.job_id))
+        original_identity = (artifact.artifact_id, artifact.sha256)
+        final_path = store.object_path(artifact.object_key)
+        preserved_bytes = final_path.read_bytes()
+        final_path.unlink()
+        stage_dir = store.staging_directory(artifact.staging_key)
+        (stage_dir / "growth.mp4").write_bytes(preserved_bytes)
+        artifact.storage_state = "STORED_UNVERIFIED"
+        render.state = "RUNNING"
+        render.attempts = 2
+        creative.state = "RENDERING"
+        session.get(GrowthControl, "default").mode = "RUNNING"
+        session.commit()
+
+        def forbidden_rerender(*args, **kwargs):
+            raise AssertionError("restart recovery must not re-render")
+        monkeypatch.setattr(worker, "render_growth_plan", forbidden_rerender)
+        assert worker.finish_internal_job(session, render, media_store=store) == "SUCCEEDED"
+        session.refresh(artifact)
+        assert (artifact.artifact_id, artifact.sha256) == original_identity
+        assert artifact.storage_state == "STORED_VERIFIED"
+        restored = store.verify_object(artifact.object_key, expected_sha256=artifact.sha256,
+                                       expected_size_bytes=artifact.size_bytes)
+        assert restored.path.read_bytes() == preserved_bytes

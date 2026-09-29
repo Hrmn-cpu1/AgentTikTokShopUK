@@ -15,6 +15,7 @@ from collections.abc import Callable
 from PIL import Image, ImageDraw, ImageFont
 from .creative_style import MR_WHO_STYLE
 from .growth_quality import evaluate_quality
+from .media_storage import hash_file
 
 WIDTH, HEIGHT, FPS = 540, 960, 24
 FONT = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
@@ -255,7 +256,7 @@ def render_growth_plan(plan_json: str, output_dir: str | Path | None = None,
         srt_path.write_text("\n".join(caption_blocks), encoding="utf-8")
         thumbnail = directory / "thumbnail.jpg"
         backgrounds[0].resize((WIDTH, HEIGHT), Image.Resampling.LANCZOS).save(thumbnail, "JPEG", quality=90)
-        digest = hashlib.sha256(output.read_bytes()).hexdigest()
+        digest, _ = hash_file(output)
         probe = subprocess.run(["ffprobe", "-v", "error", "-show_streams", "-of", "json", str(output)],
             capture_output=True, text=True, timeout=15, check=True)
         streams = json.loads(probe.stdout).get("streams", [])

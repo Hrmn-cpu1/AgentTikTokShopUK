@@ -26,6 +26,7 @@ from .governance import add_governance_routes, capital_check, fresh, validate_la
 from .video_studio import render_creator_video
 from .growth_api import add_growth_routes
 from .growth_worker import run_growth_worker
+from .media_storage import MediaStorageError, RailwayVolumeMediaStore
 
 
 Money = Decimal
@@ -80,7 +81,7 @@ class LearningInput(BaseModel):
 
 def create_app(database_url: str | None = None, operator_token: str | None = None,
                *, tiktok_provider=None, operator_login_secret=None, token_encryption_key=None,
-               trend_source=None) -> FastAPI:
+               trend_source=None, media_store=None) -> FastAPI:
     url = database_url or os.environ.get("DATABASE_URL")
     if url and url.startswith('postgresql://'):
         url = 'postgresql+psycopg://' + url[len('postgresql://'):]
@@ -88,6 +89,11 @@ def create_app(database_url: str | None = None, operator_token: str | None = Non
     if not url or not token or len(token) < 32:
         raise RuntimeError("DATABASE_URL and a strong OPERATOR_API_TOKEN are required")
     engine = create_engine(url, pool_pre_ping=True)
+    if media_store is None:
+        try:
+            media_store = RailwayVolumeMediaStore.from_environment()
+        except MediaStorageError:
+            media_store = None
     app = FastAPI(title="TikTok Shop UK Observation API")
     session_operator = add_connection_routes(app, engine, tiktok_provider, login_secret=operator_login_secret,
                           encryption_key=token_encryption_key)
@@ -112,7 +118,7 @@ def create_app(database_url: str | None = None, operator_token: str | None = Non
                 raise HTTPException(status_code=403, detail="Active TikTok identity and current manual authority required")
 
     add_governance_routes(app, engine, require_operator, require_manual_authority)
-    add_growth_routes(app, engine, require_operator, trend_source=trend_source)
+    add_growth_routes(app, engine, require_operator, trend_source=trend_source, media_store=media_store)
 
     # The DB queue is durable; this single in-process poller only executes leased jobs.
     worker_stop = threading.Event()
@@ -160,13 +166,20 @@ def create_app(database_url: str | None = None, operator_token: str | None = Non
             with engine.connect() as conn:
                 revision = conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
                 conn.execute(text("SELECT 1")).scalar_one()
-            if revision != "0009_growth_runtime_quality":
+            if revision != "0010_durable_media_artifacts":
                 raise HTTPException(503, "Database migration required")
         except HTTPException:
             raise
         except Exception:
             raise HTTPException(503, "Database unavailable") from None
+        configured_media_store = media_store
+        if configured_media_store is not None:
+            try:
+                configured_media_store.preflight()
+            except MediaStorageError:
+                configured_media_store = None
         return {"status": "ready", "database": "reachable", "migration": revision,
+            "mediaStorage": "AVAILABLE" if configured_media_store else "NOT_CONFIGURED",
             "tiktokAuthorizationConfigured": bool(tiktok_provider or all(os.environ.get(k) for k in
                 ('TIKTOK_CLIENT_KEY', 'TIKTOK_CLIENT_SECRET', 'TIKTOK_REDIRECT_URI', 'TIKTOK_TOKEN_ENCRYPTION_KEY')))}
 

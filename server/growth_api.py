@@ -4,14 +4,12 @@ import os
 from collections import Counter
 from datetime import timedelta
 from typing import Literal
-import tempfile
 from datetime import datetime, timezone
 from uuid import uuid4
 
 from fastapi import Depends, HTTPException
 from fastapi.responses import HTMLResponse
 from fastapi.responses import FileResponse
-from starlette.background import BackgroundTask
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
@@ -19,13 +17,15 @@ from sqlalchemy.orm import Session
 
 from .growth_brain import TrendCandidate, build_creative_plan, canonical_plan, choose_niche, trend_score, choose_hook_family
 from .growth_models import (GrowthCreative, GrowthControl, GrowthLearning, GrowthObservation,
-    FollowerSnapshot, NicheHypothesis, PublicationIntent, TrendSignal, GrowthStateTransition)
+    FollowerSnapshot, NicheHypothesis, PublicationIntent, TrendSignal, GrowthStateTransition,
+    GrowthMediaArtifact)
 from .growth_queue_models import GrowthJob
 from .growth_worker import enqueue_job, record_transition
 from .growth_learning import eligible_for_comparison, compare_hook_families
 from .models import TikTokConnection
-from .growth_renderer import render_growth_plan
 from .trend_sources import GoogleTrendsBrazilRSS, rank_public_signal
+from .media_storage import (MediaArtifactCorrupt, MediaArtifactMissing,
+    MediaStorageError, MediaStorageNotConfigured, RailwayVolumeMediaStore)
 
 class TrendInput(BaseModel):
     trend_id: str = Field(min_length=1, max_length=100)
@@ -56,7 +56,7 @@ class ObservationInput(BaseModel):
     followers_before: int | None = Field(default=None, ge=0)
     followers_after: int | None = Field(default=None, ge=0)
 
-def add_growth_routes(app, engine, require_operator, trend_source=None):
+def add_growth_routes(app, engine, require_operator, trend_source=None, media_store=None):
     source = trend_source or GoogleTrendsBrazilRSS()
 
     def control_row(session):
@@ -309,6 +309,11 @@ def add_growth_routes(app, engine, require_operator, trend_source=None):
             total_observations = session.scalar(select(func.count(GrowthObservation.observation_id))) or 0
             total_learnings = session.scalar(select(func.count(GrowthLearning.learning_id))) or 0
             total_pending_jobs = session.scalar(select(func.count(GrowthJob.job_id)).where(GrowthJob.state.in_(["PENDING", "RETRY", "RUNNING"]))) or 0
+            artifacts = session.scalars(select(GrowthMediaArtifact).order_by(
+                GrowthMediaArtifact.created_at.desc())).all()
+            artifacts_by_creative = {}
+            for artifact in artifacts:
+                artifacts_by_creative.setdefault(artifact.creative_id, artifact)
             creatives_by_id = {item.creative_id: item for item in creatives}
             latest_observations = {}
             for item in observations:
@@ -351,8 +356,13 @@ def add_growth_routes(app, engine, require_operator, trend_source=None):
                         "nextMutation": json.loads(learning.next_mutation_json), "createdAt": learning.created_at.isoformat()}}
                 experiment_items.append(record)
                 if creative.media_hash:
+                    artifact = artifacts_by_creative.get(creative.creative_id)
                     media_items.append({"creativeId": creative.creative_id, "experimentId": creative.experiment_id,
                         "topic": record["topic"], "state": creative.state, "mediaHash": creative.media_hash,
+                        "artifactId": artifact.artifact_id if artifact else None,
+                        "storageState": artifact.storage_state if artifact else "UNKNOWN",
+                        "mediaReady": bool(artifact and artifact.storage_state == "STORED_VERIFIED"
+                                           and artifact.quality_status == "QUALITY_PASS"),
                         "createdAt": creative.created_at.isoformat(), "videoUrl": f"/v1/growth/creatives/{creative.creative_id}/video"})
             observations_count = total_observations
             follower_snapshot = followers[0] if followers else None
@@ -405,6 +415,8 @@ def add_growth_routes(app, engine, require_operator, trend_source=None):
                     "source": follower_snapshot.source, "observedAt": follower_snapshot.observed_at.isoformat(),
                     "evidenceRef": follower_snapshot.evidence_ref},
                 "experiments": experiment_items, "media": media_items,
+                "mediaStorage": {"provider": "RAILWAY_VOLUME", "configured": media_store is not None,
+                    "integrityModel": "SHA256_READBACK", "publicAccess": False},
                 "transitions": [{"experimentId": t.experiment_id, "jobId": t.job_id,
                     "from": t.source_state, "to": t.target_state, "reason": t.reason,
                     "at": t.transitioned_at.isoformat()} for t in session.scalars(
@@ -513,42 +525,41 @@ def add_growth_routes(app, engine, require_operator, trend_source=None):
             creative = session.get(GrowthCreative, creative_id)
             if not creative:
                 raise HTTPException(404, "Unknown creative")
-            plan_json = creative.plan_json
-        directory = tempfile.mkdtemp(prefix="growth-delivery-")
-        def cancelled():
-            with Session(engine) as session:
-                control = session.get(GrowthControl, "default")
-                return control is not None and control.mode not in {"READY", "RUNNING", "ACTION_REQUIRED"}
+            if media_store is None:
+                raise HTTPException(503, "Durable media storage is not configured")
+            artifact = session.scalar(select(GrowthMediaArtifact).where(
+                GrowthMediaArtifact.creative_id == creative_id,
+                GrowthMediaArtifact.storage_state == "STORED_VERIFIED",
+                GrowthMediaArtifact.quality_status == "QUALITY_PASS"
+            ).order_by(GrowthMediaArtifact.created_at.desc()))
+            if artifact is None:
+                raise HTTPException(409, "No quality-passed, durably verified artifact is available")
+            artifact_id, object_key = artifact.artifact_id, artifact.object_key
+            digest, size_bytes = artifact.sha256, artifact.size_bytes
         try:
-            output, digest, cleanup = render_growth_plan(plan_json, output_dir=directory, should_cancel=cancelled)
-        except InterruptedError:
-            import shutil
-            shutil.rmtree(directory, ignore_errors=True)
-            raise HTTPException(409, "Render cancelled by operator control") from None
-        except Exception:
-            import shutil
-            shutil.rmtree(directory, ignore_errors=True)
-            raise HTTPException(503, "Could not render the experiment video") from None
-        with Session(engine) as session:
-            creative = session.get(GrowthCreative, creative_id)
-            creative.media_ref = f"rendered:{creative_id}/growth.mp4"
-            creative.media_hash = digest
-            manifest = json.loads((output.parent / "manifest.json").read_text(encoding="utf-8"))
-            quality = manifest.get("qualityGate", {"status": "QUALITY_REVIEW"})
-            creative.quality_status = quality.get("status", "QUALITY_REVIEW")
-            creative.quality_json = json.dumps(quality, ensure_ascii=False, sort_keys=True)
-            creative.purpose = "EXPERIMENT"
-            creative.creative_learning_eligible = False
-            creative.style_baseline_eligible = False
-            creative.exclusion_reason = "AWAITING_VERIFIED_PUBLICATION_AND_OBSERVATION"
-            source_state = creative.state
-            creative.state = "READY" if creative.quality_status != "QUALITY_FAIL" else "FAILED"
-            record_transition(session, source_state, creative.state,
-                              f"synchronous render completed with {creative.quality_status}", creative.experiment_id)
-            session.commit()
-        return FileResponse(output, media_type="video/mp4", filename=f"{creative_id}.mp4",
-                            headers={"X-Creative-SHA256": digest, "X-Delivery-State": "LOCAL_RENDERED"},
-                            background=BackgroundTask(lambda: __import__("shutil").rmtree(directory, ignore_errors=True)))
+            verified = media_store.verify_object(object_key, expected_sha256=digest,
+                                                 expected_size_bytes=size_bytes)
+        except MediaArtifactMissing:
+            with Session(engine) as session:
+                row = session.get(GrowthMediaArtifact, artifact_id)
+                if row:
+                    row.storage_state = "ARTIFACT_MISSING"
+                    row.failure_reason = "volume readback found no canonical object"
+                    session.commit()
+            raise HTTPException(503, "Durable media artifact is missing") from None
+        except MediaArtifactCorrupt:
+            with Session(engine) as session:
+                row = session.get(GrowthMediaArtifact, artifact_id)
+                if row:
+                    row.storage_state = "ARTIFACT_CORRUPT"
+                    row.failure_reason = "volume readback failed integrity verification"
+                    session.commit()
+            raise HTTPException(503, "Durable media integrity verification failed") from None
+        except MediaStorageError:
+            raise HTTPException(503, "Durable media storage is unavailable") from None
+        return FileResponse(verified.path, media_type="video/mp4", filename=f"{creative_id}.mp4",
+            headers={"ETag": f'"{digest}"', "X-Creative-SHA256": digest,
+                     "X-Media-Artifact-ID": artifact_id, "X-Media-State": "MEDIA_READY"})
 
     @app.post("/v1/growth/trends", dependencies=[Depends(require_operator)])
     def ingest_trend(item: TrendInput):
