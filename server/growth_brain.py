@@ -58,6 +58,23 @@ def choose_hook_family(candidate: TrendCandidate, existing_counts: dict[str, int
     return choices[seed % len(choices)]
 
 
+def _hook_narration(family: str) -> str:
+    """Short natural spoken hooks; on-screen text may retain topic specificity."""
+    options = {
+        "curiosity": "Por que isso chama atenção?",
+        "unexpected_fact": "Tem um detalhe inesperado aqui.",
+        "challenge": "Você explica isso em dez segundos?",
+        "comparison": "Sinal de busca ou fato?",
+        "visual_surprise": "Olha isso por outro ângulo.",
+        "question": "Por que isso está em alta?",
+        "contrarian_angle": "Busca alta não prova nada.",
+        "before_after": "Antes de compartilhar, pare.",
+        "mini_story": "Uma busca trouxe esta pergunta.",
+        "open_loop": "Tem um detalhe que muda tudo.",
+    }
+    return options[family]
+
+
 def _hook_text(topic: str, family: str) -> str:
     short = topic if len(topic) <= 32 else topic[:29].rsplit(" ", 1)[0] + "…"
     templates = {
@@ -75,7 +92,8 @@ def _hook_text(topic: str, family: str) -> str:
     return templates[family]
 
 
-def build_creative_plan(candidate: TrendCandidate, niche: str, hook_family: str | None = None) -> dict[str, Any]:
+def build_creative_plan(candidate: TrendCandidate, niche: str, hook_family: str | None = None,
+                        creative_dna: dict[str, Any] | None = None) -> dict[str, Any]:
     topic = " ".join(candidate.topic.strip().split())[:180]
     if not topic or niche not in NICHE_FAMILIES:
         raise ValueError("valid topic and supported niche are required")
@@ -84,6 +102,12 @@ def build_creative_plan(candidate: TrendCandidate, niche: str, hook_family: str 
         raise ValueError("unsupported Mr.Who? hook family")
     hook = _hook_text(topic, hook_family)
     short_topic = topic if len(topic) <= 34 else topic[:31].rsplit(" ", 1)[0] + "…"
+    dna = creative_dna or {}
+    dna_patterns = dna.get("patterns") if isinstance(dna.get("patterns"), dict) else {}
+    rhythm = dna_patterns.get("rhythm") if isinstance(dna_patterns.get("rhythm"), dict) else {}
+    scene_seconds = rhythm.get("sceneSeconds") if isinstance(rhythm.get("sceneSeconds"), list) else [1.8, 2.7, 2.8, 3.0, 3.2]
+    if len(scene_seconds) < 5:
+        scene_seconds = [1.8, 2.7, 2.8, 3.0, 3.2]
     script = [
         f"“{short_topic}” surgiu nas buscas do Brasil.",
         "Busca alta não prova que algo é verdade.",
@@ -104,13 +128,13 @@ def build_creative_plan(candidate: TrendCandidate, niche: str, hook_family: str 
         "hook": hook,
         "script": script,
         "scenePlan": [
-            {"seconds": 2.0, "hook": True, "text": hook, "narration": hook, "visual": "orbiting original vector animation", "visualLabel": "GANCHO · PERGUNTA"},
-            {"seconds": 3.1, "text": script[0], "narration": f"O assunto {short_topic} apareceu nas buscas em alta no Brasil.", "visual": "animated rising search signal", "visualLabel": "SINAL DE BUSCA · BR"},
-            {"seconds": 2.8, "text": script[1], "narration": script[1], "visual": "original animated comparison graphic", "visualLabel": "LEITURA CRÍTICA"},
-            {"seconds": 3.0, "text": script[2], "narration": "Antes de compartilhar, confira a data, a fonte original e o contexto.", "visual": "animated source-check checklist", "visualLabel": "TRÊS CHECAGENS"},
-            {"seconds": 3.0, "text": script[3], "narration": script[3], "visual": "original animated call to action", "visualLabel": "CTA · COMPARTILHE COM CUIDADO"},
+            {"seconds": float(scene_seconds[0]), "hook": True, "text": hook, "narration": _hook_narration(hook_family), "visual": "orbiting original vector animation", "visualLabel": "GANCHO · PERGUNTA"},
+            {"seconds": float(scene_seconds[1]), "text": script[0], "narration": f"O assunto {short_topic} apareceu nas buscas em alta no Brasil.", "visual": "animated rising search signal", "visualLabel": "SINAL DE BUSCA · BR"},
+            {"seconds": float(scene_seconds[2]), "text": script[1], "narration": script[1], "visual": "original animated comparison graphic", "visualLabel": "LEITURA CRÍTICA"},
+            {"seconds": float(scene_seconds[3]), "text": script[2], "narration": "Antes de compartilhar, confira a data, a fonte original e o contexto.", "visual": "animated source-check checklist", "visualLabel": "TRÊS CHECAGENS"},
+            {"seconds": float(scene_seconds[4]), "text": script[3], "narration": script[3], "visual": "original animated call to action", "visualLabel": "CTA · COMPARTILHE COM CUIDADO"},
         ],
-        "assetPlan": {"visuals": "original programmatic vector scenes; no owner-supplied or third-party media", "audio": "espeak-ng pt-BR narration when installed plus original low-volume audio bed", "captions": "short scene-synchronized Portuguese copy burned in plus SRT"},
+        "assetPlan": {"visuals": "original programmatic vector scenes; no owner-supplied or third-party media", "audio": "Piper neural pt-BR narration plus original low-volume synthetic audio bed", "captions": "short scene-synchronized Portuguese copy burned in plus SRT"},
         "originalIdea": {
             "sourcePattern": "PUBLIC_SIGNAL_TO_ORIGINAL_INTERPRETATION",
             "angle": f"Transformar o sinal público sobre {short_topic} em uma pergunta original + checklist de verificação.",
@@ -120,12 +144,13 @@ def build_creative_plan(candidate: TrendCandidate, niche: str, hook_family: str 
         "storyArc": "QUESTION_SIGNAL_CONTEXT_CHECKLIST_CTA",
         "ctaType": "SAVE_AND_VERIFY",
         "creativeDNA": {
+            **dna,
             "brandStyle": {"styleId": MR_WHO_STYLE["style_id"], "styleVersion": MR_WHO_STYLE["style_version"]},
             "hookFamily": hook_family,
-            "storyArc": "QUESTION_SIGNAL_CONTEXT_CHECKLIST_CTA",
+            "storyArc": "HOOK_CONTEXT_VALUE_METHOD_CTA",
             "sceneCount": 5,
-            "pacingSeconds": [2.0, 3.1, 2.8, 3.0, 3.0],
-            "visualGrammar": ["9:16", "faceless", "motion-vector", "short-copy", "crossfades"],
+            "pacingSeconds": [float(value) for value in scene_seconds[:5]],
+            "visualGrammar": ["9:16", "faceless", "motion-vector", "short-copy", "fast-cuts"],
             "ctaType": "SAVE_AND_VERIFY",
         },
         "provenance": {
@@ -145,7 +170,7 @@ def build_creative_plan(candidate: TrendCandidate, niche: str, hook_family: str 
         "hypothesis": "Um hook em forma de pergunta e um checklist verificável podem reter melhor do que uma afirmação genérica.",
         "nextExperimentMutation": {"variable": "hook", "next": "compare a direct checklist hook against this question hook after real observations"},
         "visualGrammar": ["9:16", "faceless", "five-scene motion sequence", "animated crop and camera drift", "short timed copy", "crossfades"],
-        "voice": {"generated": "runtime-dependent", "language": "pt-BR", "faceless": True, "provider": "espeak-ng local OSS"},
+        "voice": {"generated": "required", "language": "pt-BR", "faceless": True, "provider": "Piper pt_BR-faber-medium neural local"},
         "caption": f"{topic} — teste original do AgentTikTok.",
         "hashtags": ["#brasil", "#paravoce", "#conteudooriginal"],
         "sourceEvidence": {

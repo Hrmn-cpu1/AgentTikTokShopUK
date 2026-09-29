@@ -9,6 +9,7 @@ def manifest(**overrides):
         "captionsBurnedIn": True, "hookDurationSeconds": 2.0,
         "audioVideoDurationMismatchSeconds": 0.02, "blankFrameCheck": "PASS",
         "assetPlan": {"visuals": "original vector scenes"}, "narrationGenerated": True,
+        "tts": {"provider": "PIPER_LOCAL_NEURAL", "voice": "pt_BR-faber-medium"},
         "sha256": "a" * 64, "thumbnail": "thumbnail.jpg", "purpose": "EXPERIMENT",
     }
     value.update(overrides)
@@ -43,3 +44,9 @@ def test_quality_gate_does_not_allow_invalid_duration_or_missing_blank_scan_to_l
     result = evaluate_quality(manifest(durationSeconds=0, blankFrameCheck="UNKNOWN"), plan())
     assert result["status"] == "QUALITY_FAIL"
     assert result["learningEligible"] is False
+
+
+def test_quality_gate_rejects_espeak_or_unknown_production_voice():
+    result = evaluate_quality(manifest(tts={"provider":"ESPEAK_NG","voice":"pt-br"}), plan())
+    assert result["status"] == "QUALITY_FAIL"
+    assert "production_tts" in result["hardFailures"]
