@@ -14,41 +14,38 @@ depends_on = None
 
 
 def upgrade():
-    op.add_column("growth_creatives",
-        sa.Column("policy_status", sa.String(24), nullable=False,
-                  server_default="NOT_EVALUATED"))
-    op.add_column("growth_follower_snapshots",
-        sa.Column("truth_classification", sa.String(30), nullable=False,
-                  server_default="UNKNOWN"))
+    # Batch mode keeps this migration valid in the SQLite E2E harness while
+    # producing equivalent constraints in PostgreSQL production.
+    with op.batch_alter_table("growth_creatives") as batch:
+        batch.add_column(sa.Column("policy_status", sa.String(24), nullable=False,
+                                   server_default="NOT_EVALUATED"))
 
-    op.add_column("growth_control",
-        sa.Column("scheduler_enabled", sa.Boolean(), nullable=False,
-                  server_default=sa.text("true")))
-    op.add_column("growth_control",
-        sa.Column("scheduler_interval_seconds", sa.Integer(), nullable=False,
-                  server_default="300"))
-    op.add_column("growth_control",
-        sa.Column("daily_experiment_quota", sa.Integer(), nullable=False,
-                  server_default="3"))
-    op.add_column("growth_control",
-        sa.Column("daily_handoff_quota", sa.Integer(), nullable=False,
-                  server_default="3"))
-    op.add_column("growth_control",
-        sa.Column("follower_goal", sa.Integer(), nullable=False,
-                  server_default="1000"))
-    op.add_column("growth_control",
-        sa.Column("last_scheduler_tick_at", sa.DateTime(timezone=True), nullable=True))
+    with op.batch_alter_table("growth_follower_snapshots") as batch:
+        batch.add_column(sa.Column("truth_classification", sa.String(30), nullable=False,
+                                   server_default="UNKNOWN"))
+        batch.create_check_constraint("follower_truth_classification",
+            "truth_classification IN ('UNKNOWN','OWNER_REPORTED','PROVIDER_VERIFIED')")
 
-    op.create_check_constraint("follower_truth_classification", "growth_follower_snapshots",
-        "truth_classification IN ('UNKNOWN','OWNER_REPORTED','PROVIDER_VERIFIED')")
-    op.create_check_constraint("growth_scheduler_interval_min", "growth_control",
-        "scheduler_interval_seconds >= 60")
-    op.create_check_constraint("growth_daily_experiment_quota", "growth_control",
-        "daily_experiment_quota BETWEEN 1 AND 24")
-    op.create_check_constraint("growth_daily_handoff_quota", "growth_control",
-        "daily_handoff_quota BETWEEN 1 AND 24")
-    op.create_check_constraint("growth_follower_goal_positive", "growth_control",
-        "follower_goal >= 1")
+    with op.batch_alter_table("growth_control") as batch:
+        batch.add_column(sa.Column("scheduler_enabled", sa.Boolean(), nullable=False,
+                                   server_default=sa.text("true")))
+        batch.add_column(sa.Column("scheduler_interval_seconds", sa.Integer(), nullable=False,
+                                   server_default="300"))
+        batch.add_column(sa.Column("daily_experiment_quota", sa.Integer(), nullable=False,
+                                   server_default="3"))
+        batch.add_column(sa.Column("daily_handoff_quota", sa.Integer(), nullable=False,
+                                   server_default="3"))
+        batch.add_column(sa.Column("follower_goal", sa.Integer(), nullable=False,
+                                   server_default="1000"))
+        batch.add_column(sa.Column("last_scheduler_tick_at", sa.DateTime(timezone=True), nullable=True))
+        batch.create_check_constraint("growth_scheduler_interval_min",
+            "scheduler_interval_seconds >= 60")
+        batch.create_check_constraint("growth_daily_experiment_quota",
+            "daily_experiment_quota BETWEEN 1 AND 24")
+        batch.create_check_constraint("growth_daily_handoff_quota",
+            "daily_handoff_quota BETWEEN 1 AND 24")
+        batch.create_check_constraint("growth_follower_goal_positive",
+            "follower_goal >= 1")
 
     op.create_table(
         "growth_policy_assessments",
@@ -123,17 +120,21 @@ def downgrade():
     op.drop_index("ix_growth_policy_creative_time", table_name="growth_policy_assessments")
     op.drop_table("growth_policy_assessments")
 
-    op.drop_constraint("growth_follower_goal_positive", "growth_control", type_="check")
-    op.drop_constraint("growth_daily_handoff_quota", "growth_control", type_="check")
-    op.drop_constraint("growth_daily_experiment_quota", "growth_control", type_="check")
-    op.drop_constraint("growth_scheduler_interval_min", "growth_control", type_="check")
-    op.drop_constraint("follower_truth_classification", "growth_follower_snapshots", type_="check")
+    with op.batch_alter_table("growth_control") as batch:
+        batch.drop_constraint("growth_follower_goal_positive", type_="check")
+        batch.drop_constraint("growth_daily_handoff_quota", type_="check")
+        batch.drop_constraint("growth_daily_experiment_quota", type_="check")
+        batch.drop_constraint("growth_scheduler_interval_min", type_="check")
+        batch.drop_column("last_scheduler_tick_at")
+        batch.drop_column("follower_goal")
+        batch.drop_column("daily_handoff_quota")
+        batch.drop_column("daily_experiment_quota")
+        batch.drop_column("scheduler_interval_seconds")
+        batch.drop_column("scheduler_enabled")
 
-    op.drop_column("growth_control", "last_scheduler_tick_at")
-    op.drop_column("growth_control", "follower_goal")
-    op.drop_column("growth_control", "daily_handoff_quota")
-    op.drop_column("growth_control", "daily_experiment_quota")
-    op.drop_column("growth_control", "scheduler_interval_seconds")
-    op.drop_column("growth_control", "scheduler_enabled")
-    op.drop_column("growth_follower_snapshots", "truth_classification")
-    op.drop_column("growth_creatives", "policy_status")
+    with op.batch_alter_table("growth_follower_snapshots") as batch:
+        batch.drop_constraint("follower_truth_classification", type_="check")
+        batch.drop_column("truth_classification")
+
+    with op.batch_alter_table("growth_creatives") as batch:
+        batch.drop_column("policy_status")
