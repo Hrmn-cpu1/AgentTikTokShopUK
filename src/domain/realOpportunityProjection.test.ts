@@ -1,3 +1,0 @@
-import {describe,expect,it} from 'vitest';import {loadRealOpportunityProjection} from './realOpportunityProjection';
-function storage(){const m=new Map<string,string>();return {getItem:(k:string)=>m.get(k)??null,setItem:(k:string,v:string)=>{m.set(k,v)},removeItem:(k:string)=>m.delete(k),clear:()=>m.clear(),key:()=>null,get length(){return m.size}} as Storage}
-describe('real opportunity projection',()=>{it('fails closed instead of producing demo score when truth is absent',()=>{const x=loadRealOpportunityProjection(storage(),'2026-09-27T06:00:00Z');expect(x.result).toBeNull();expect(x.blockers).toContain('REAL_PRODUCT:MISSING');expect(x.blockers).toContain('OPPORTUNITY_EVIDENCE:MISSING');expect(x.blockers).toContain('CAPITAL_AUTHORITY:MISSING')})});

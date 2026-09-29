@@ -1,8 +1,0 @@
-include ':app'
-include ':tiktok-open-sdk-core', ':tiktok-open-sdk-auth'
-project(':tiktok-open-sdk-core').projectDir = new File('./tiktok-open-sdk/core')
-project(':tiktok-open-sdk-auth').projectDir = new File('./tiktok-open-sdk/auth')
-include ':capacitor-cordova-android-plugins'
-project(':capacitor-cordova-android-plugins').projectDir = new File('./capacitor-cordova-android-plugins/')
-
-apply from: 'capacitor.settings.gradle'

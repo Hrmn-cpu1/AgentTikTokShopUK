@@ -1,5 +1,0 @@
-import type {ScaleExecutionPacket} from './scaleExecutionPacket';
-export const SCALE_PACKET_STORAGE_KEY='tiktok-profit-agent:scale-packet:v1';
-function validate(x:ScaleExecutionPacket){if(!x.packetId||!x.approvalId||!x.idempotencyKey||x.profitableExperimentIds.length<2||!x.proposalEvidenceRef||!x.capitalEvidenceRef||!Number.isFinite(Date.parse(x.createdAt))||x.externalExecutionAllowed!==false||x.readyForManualScale!==true)throw new Error('Invalid scale execution packet');if(!Number.isFinite(x.additionalCapitalGbp)||x.additionalCapitalGbp<0||!Number.isFinite(x.maximumLossGbp)||x.maximumLossGbp<0)throw new Error('Invalid scale amounts');return Object.freeze(structuredClone(x))}
-export function saveScalePacket(storage:Pick<Storage,'setItem'>,x:ScaleExecutionPacket){const safe=validate(x);storage.setItem(SCALE_PACKET_STORAGE_KEY,JSON.stringify(safe));return safe}
-export function loadScalePacket(storage:Pick<Storage,'getItem'>):ScaleExecutionPacket|null{const raw=storage.getItem(SCALE_PACKET_STORAGE_KEY);if(!raw)return null;try{return validate(JSON.parse(raw) as ScaleExecutionPacket)}catch{return null}}
