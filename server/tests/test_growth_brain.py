@@ -16,6 +16,9 @@ def test_trend_score_and_plan_are_evidence_bound():
     assert plan["sourceEvidence"]["sourceRef"] == "ci://trend/space-1"
     assert plan["truth"] == "EVIDENCE_BACKED_INPUT"
     assert plan["voice"]["faceless"] is True
+    scenes = plan["scenePlan"]
+    assert len(scenes) == 5 and scenes[0]["hook"] is True and scenes[0]["seconds"] <= 2
+    assert all(len(scene["text"]) <= 60 and "\\n" not in scene["text"] for scene in scenes)
 
 def test_niche_selection_explores_least_tested_family():
     candidate = TrendCandidate(topic="x", source="CI_FAKE", source_ref="ci://trend/x",

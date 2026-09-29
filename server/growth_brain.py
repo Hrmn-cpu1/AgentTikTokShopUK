@@ -53,11 +53,13 @@ def build_creative_plan(candidate: TrendCandidate, niche: str) -> dict[str, Any]
     topic = " ".join(candidate.topic.strip().split())[:180]
     if not topic or niche not in NICHE_FAMILIES:
         raise ValueError("valid topic and supported niche are required")
-    hook = f"O que está por trás de “{topic}”?"
+    hook = "Por que tanto interesse?"
+    short_topic = topic if len(topic) <= 34 else topic[:31].rsplit(" ", 1)[0] + "…"
     script = [
-        f"“{topic}” aparece entre as buscas em alta no Brasil.",
-        "Isso é um sinal de interesse em buscas — não é uma métrica do TikTok nem confirma uma notícia.",
-        "Antes de compartilhar: confira a fonte original, a data e o contexto.",
+        f"“{short_topic}” surgiu nas buscas do Brasil.",
+        "Busca alta não prova que algo é verdade.",
+        "Confira a data, a fonte e o contexto.",
+        "Salve o método. Verifique antes de compartilhar.",
     ]
     return {
         "schemaVersion": 1,
@@ -69,19 +71,19 @@ def build_creative_plan(candidate: TrendCandidate, niche: str) -> dict[str, Any]
         "hook": hook,
         "script": script,
         "scenePlan": [
-            {"seconds": 3.5, "text": hook, "visual": "original typography card"},
-            {"seconds": 3.5, "text": script[0], "visual": "topic card with Brazil signal label"},
-            {"seconds": 3.5, "text": script[1] + " " + script[2], "visual": "source-check checklist"},
-            {"seconds": 3.5, "text": "Salve este checklist e confira antes de compartilhar.", "visual": "original CTA card"},
+            {"seconds": 2.0, "hook": True, "text": hook, "narration": hook, "visual": "orbiting original vector animation", "visualLabel": "GANCHO · PERGUNTA"},
+            {"seconds": 3.1, "text": script[0], "narration": f"O assunto {short_topic} apareceu nas buscas em alta no Brasil.", "visual": "animated rising search signal", "visualLabel": "SINAL DE BUSCA · BR"},
+            {"seconds": 2.8, "text": script[1], "narration": script[1], "visual": "original animated comparison graphic", "visualLabel": "LEITURA CRÍTICA"},
+            {"seconds": 3.0, "text": script[2], "narration": "Antes de compartilhar, confira a data, a fonte original e o contexto.", "visual": "animated source-check checklist", "visualLabel": "TRÊS CHECAGENS"},
+            {"seconds": 3.0, "text": script[3], "narration": script[3], "visual": "original animated call to action", "visualLabel": "CTA · COMPARTILHE COM CUIDADO"},
         ],
-        "assetPlan": {"visuals": "original generated typography; no third-party video/audio", "audio": "synthetic low-volume tone bed", "captions": "burned-in Portuguese captions plus SRT"},
+        "assetPlan": {"visuals": "original programmatic vector scenes; no owner-supplied or third-party media", "audio": "espeak-ng pt-BR narration when installed plus original low-volume audio bed", "captions": "short scene-synchronized Portuguese copy burned in plus SRT"},
         "hypothesis": "Um hook em forma de pergunta e um checklist verificável podem reter melhor do que uma afirmação genérica.",
         "nextExperimentMutation": {"variable": "hook", "next": "compare a direct checklist hook against this question hook after real observations"},
-        "visualGrammar": ["9:16", "faceless", "fast-cuts", "burned-captions"],
-        "voice": {"generated": False, "language": "pt-BR", "faceless": True, "reason": "no local speech synthesis in this zero-cost render"},
+        "visualGrammar": ["9:16", "faceless", "five-scene motion sequence", "animated crop and camera drift", "short timed copy", "crossfades"],
+        "voice": {"generated": "runtime-dependent", "language": "pt-BR", "faceless": True, "provider": "espeak-ng local OSS"},
         "caption": f"{topic} — teste original do AgentTikTok.",
         "hashtags": ["#brasil", "#paravoce", "#conteudooriginal"],
-        "durationSeconds": 14,
         "sourceEvidence": {
             "source": candidate.source,
             "sourceRef": candidate.source_ref,

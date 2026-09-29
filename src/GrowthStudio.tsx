@@ -34,6 +34,20 @@ export default function GrowthStudio() {
     }catch(cause){setError(cause instanceof Error?cause.message:'Erro ao produzir o vídeo')}
     finally{setBusy(false)}
   };
+  const shareClip=async(clip:Blob)=>{
+    if(Capacitor.getPlatform()!=='web'){
+      const bytes=new Uint8Array(await clip.arrayBuffer());
+      let binary='';
+      for(let offset=0;offset<bytes.length;offset+=0x8000)binary+=String.fromCharCode(...bytes.subarray(offset,offset+0x8000));
+      await TikTokShare.shareVideo({base64:btoa(binary)});
+      setDeliveryMessage('TikTok aberto para revisão. O compositor ainda exige que você revise e conclua a publicação; o app não mede os toques feitos dentro do TikTok.');
+      return;
+    }
+    const file=new File([clip],'agent-tiktok-shop.mp4',{type:'video/mp4'});
+    if(!navigator.canShare?.({files:[file]}))throw new Error('Compartilhamento de vídeo indisponível neste celular; tente Baixar vídeo');
+    await navigator.share({files:[file],title:'Vídeo original'});
+    setDeliveryMessage('Folha de compartilhamento aberta. Escolha TikTok e conclua a publicação dentro do TikTok.');
+  };
   const runAgent=async()=>{
     setError('');setAgentBusy(true);
     try {
@@ -46,6 +60,7 @@ export default function GrowthStudio() {
       const clip=await media.blob();
       setVideo(URL.createObjectURL(clip));
       setAgentResult({topic:result.selected.topic,source:result.source,score:result.selected.score,evidence:result.plan.sourceEvidence.evidence});
+      if(Capacitor.getPlatform()!=='web')await shareClip(clip);
     }catch(cause){setError(cause instanceof Error?cause.message:'Erro no experimento')}
     finally{setAgentBusy(false)}
   };
@@ -53,18 +68,7 @@ export default function GrowthStudio() {
     if(!video)return;
     try {
       const clip=await (await fetch(video,{credentials:'same-origin'})).blob();
-      if(Capacitor.getPlatform()!=='web'){
-        const bytes=new Uint8Array(await clip.arrayBuffer());
-        let binary='';
-        for(let offset=0;offset<bytes.length;offset+=0x8000)binary+=String.fromCharCode(...bytes.subarray(offset,offset+0x8000));
-        await TikTokShare.shareVideo({base64:btoa(binary)});
-        setDeliveryMessage('Compositor do TikTok aberto. O vídeo só conta como publicado depois da confirmação no TikTok.');
-        return;
-      }
-      const file=new File([clip],'agent-tiktok-shop.mp4',{type:'video/mp4'});
-      if(!navigator.canShare?.({files:[file]}))throw new Error('Compartilhamento de vídeo indisponível neste celular; tente Baixar vídeo');
-      await navigator.share({files:[file],title:'Vídeo original'});
-      setDeliveryMessage('Folha de compartilhamento aberta. Escolha TikTok e confirme a publicação dentro do TikTok.');
+      await shareClip(clip);
     }catch(cause){if(cause instanceof Error && cause.name!=='AbortError')setError(cause.message)}
   };
   const number=Number(followers);
@@ -72,8 +76,8 @@ export default function GrowthStudio() {
     <p>Crie um vídeo vertical original com uma foto que você tem direito de usar. Revise o conteúdo e publique no TikTok pela conta autorizada.</p>
     <div className="growth-agent-run">
       <h3>Experimento automático com sinal público do Brasil</h3>
-      <p>Busca tendência pública atual, escolhe por recência e interesse, cria um roteiro original e renderiza um MP4 9:16. Sinais do Google Trends não são métricas do TikTok.</p>
-      <button type="button" disabled={agentBusy} onClick={()=>{void runAgent()}}>{agentBusy?'Executando descoberta e render…':'Descobrir e produzir vídeo original'}</button>
+      <p>Busca sinais públicos atuais no Brasil, seleciona um tema, cria cinco cenas gráficas originais com movimento e locução pt-BR quando disponível, e renderiza MP4 9:16 sem foto fornecida por você. Android abre o TikTok para revisão no fim; isso não publica automaticamente. Google Trends não é métrica do TikTok.</p>
+      <button type="button" disabled={agentBusy} onClick={()=>{void runAgent()}}>{agentBusy?'Descobrindo, criando e preparando…':Capacitor.getPlatform()!=='web'?'Gerar e enviar ao TikTok para revisão':'Descobrir e produzir vídeo original'}</button>
       {agentResult&&<p>Selecionado: <strong>{agentResult.topic}</strong> · fonte: {agentResult.source} · score de busca: {agentResult.score}. Métricas TikTok: desconhecidas. {agentResult.evidence}</p>}
       {video&&agentResult&&<><video controls playsInline src={video} aria-label="Prévia do vídeo do experimento" />
         <a href={video} download="agent-tiktok-experiment.mp4">Baixar vídeo do experimento</a>

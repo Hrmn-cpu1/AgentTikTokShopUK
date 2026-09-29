@@ -4,7 +4,7 @@ from server.growth_renderer import render_growth_plan
 
 def test_growth_plan_renders_vertical_mp4_audio_captions_manifest_and_thumbnail(tmp_path):
     plan = json.dumps({"topic":"tema original", "hook":"Você sabia disso?","script":["Um teste original de conteúdo para crescimento legítimo."],"caption":"Siga para mais.",
-        "scenePlan":[{"seconds":2,"text":"Você sabia disso?"},{"seconds":2,"text":"Sinal público; TikTok UNKNOWN."}],
+        "scenePlan":[{"seconds":2,"text":"Você sabia disso?","narration":"Você sabia disso?"},{"seconds":2,"text":"Sinal público; TikTok UNKNOWN.","narration":"Sinal público; TikTok desconhecido."},{"seconds":2,"text":"Confira a fonte e o contexto.","narration":"Confira a fonte e o contexto."}],
         "sourceEvidence":{"source":"PUBLIC_FIXTURE"}, "assetPlan":{"visuals":"original"}})
     output, digest, cleanup = render_growth_plan(plan, output_dir=tmp_path)
     try:
@@ -19,11 +19,18 @@ def test_growth_plan_renders_vertical_mp4_audio_captions_manifest_and_thumbnail(
         assert audio["codec_name"] == "aac"
         assert output.stat().st_size > 0
         assert (tmp_path / "captions.pt-BR.srt").is_file()
-        assert "00:00:02,000" in (tmp_path / "captions.pt-BR.srt").read_text()
+        assert "Você sabia disso?" in (tmp_path / "captions.pt-BR.srt").read_text()
         assert (tmp_path / "thumbnail.jpg").is_file()
         manifest = json.loads((tmp_path / "manifest.json").read_text())
         assert manifest["aspectRatio"] == "9:16" and manifest["sha256"] == digest
         assert manifest["sourceEvidence"]["source"] == "PUBLIC_FIXTURE"
+        assert manifest["rendererVersion"] == "2.0.0"
+        assert manifest["sceneCount"] == 3 and manifest["sceneTransitions"] == 2
+        assert manifest["animatedCropZoom"] and manifest["humanChosenPhotoUsed"] is False
+        assert manifest["narrationGenerated"] == bool(__import__("shutil").which("espeak-ng"))
+        captions = (tmp_path / "captions.pt-BR.srt").read_text()
+        assert captions.count(" --> ") == 3
+        assert "\n\n" in captions and "Sinal público; TikTok UNKNOWN." in captions
     finally:
         cleanup()
 

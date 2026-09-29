@@ -25,6 +25,31 @@ Scope: patterns only. None of the unaudited uploaders below is a production depe
 - Delivery must be a separate state machine from render. Observe only provider status or owner-supplied verifiable evidence. Tie each lesson to the prior experiment before selecting its mutation.
 - Deduplicate before retrying external effects; never automatically retry a possibly accepted post without checking status.
 
+## Short-form renderer V2
+
+The selected OSS patterns are the staged pipeline in [GabrielLaxy/TikTokAIVideoGenerator](https://github.com/GabrielLaxy/TikTokAIVideoGenerator), the self-hosted short-video flow in [gyoridavid/short-video-maker](https://github.com/gyoridavid/short-video-maker), and RSS-to-vertical-video orchestration in [maxgfr/feedreel](https://github.com/maxgfr/feedreel). We reuse the separation of evidence, scene plan, audio, subtitles, render and delivery state. We do not import their publishing/session code or remote AI services. Their features and maintenance claims are repository claims, not independently verified guarantees.
+
+V2 uses locally generated vector art rather than downloaded footage: five scene plates, animated crop/pan/zoom, short timed phrases, scene transitions, an original audio bed, local `espeak-ng` pt-BR narration, H.264/AAC output, SRT sidecar, thumbnail and a hash-bound manifest. The Docker image and Backend CI install `espeak-ng`. No owner-selected photo, stock clip or copyrighted sound is required. If a runtime lacks speech synthesis, the manifest reports narration unavailable rather than claiming it exists.
+
+The hook is capped at two seconds. Scene phrases are the captions; long paragraphs are not rendered. The source watermark in the video says Google Trends BR and TikTok metrics UNKNOWN, so a Google search signal cannot be mistaken for TikTok virality.
+
+## Publishing route comparison
+
+| Route | What it can do | Human actions / gate | Selection |
+| --- | --- | --- | --- |
+| Content Posting API — Direct Post | Send video to TikTok using `video.publish`; app must query creator capabilities, show options and consent, then check post status | Current client has only `user.info.basic`. TikTok's current guidelines limit unaudited clients to `SELF_ONLY`; an audit is needed for public visibility. The guidelines also reject a utility limited to private/internal accounts, which describes this private APK. | Not eligible for this private-only product; do not request/attempt it |
+| Content Posting API — Upload/Draft | Transfer to TikTok's creator inbox using `video.upload` | New approved scope and user consent needed; owner still completes the draft in TikTok. Inbox delivery is not publication. The private-only utility constraint remains. | Not selected for this private APK |
+| TikTok Share Kit | Official mobile SDK hands video into TikTok's create flow | TikTok remains in charge of creator editing and final post. Current app uses Android standard sharing, not the Share Kit SDK. | Supported fallback if product/app registration permits it |
+| Android `ACTION_SEND` + `FileProvider` | Opens TikTok with a local MP4 through its documented Android sharing intent | Owner reviews caption/visibility and completes TikTok's flow. Current plugin sends only video bytes; it cannot observe composer steps or publication. | Selected and currently implemented |
+| Browser automation | Can automate a visible web UI in principle | Session/QR/login handling, UI drift, account and ToS risk; could not safely claim a publish until read-back verification | TECHNICALLY POSSIBLE / NOT SELECTED |
+| Unofficial uploaders / private endpoints | Some automate upload through browser sessions, private endpoints, cookies or reverse-engineered signatures | Fragile, session/account risk; bypass techniques would violate this project's constraints | Studied for queue/retry patterns only; not implemented |
+
+### Human touch audit
+
+The existing TikTok plugin calls `Intent.ACTION_SEND`, grants a read-only `content://` URI and starts TikTok's package. This proves handoff to TikTok, not an autonomous post. It does not populate or verify caption, privacy, Post, confirmations, or resulting video ID. The exact number of taps during the owner's earlier TikTok flow was not recorded, so it must remain `UNKNOWN`; the app cannot observe taps made inside TikTok. V2 reduces the app-side flow to one explicit Android button that starts discovery/render and hands the finished MP4 to TikTok. Any remaining TikTok composer steps must be counted during the next device test.
+
+Official references used for this comparison: [Direct Post](https://developers.tiktok.com/docs/en/content-posting-api-reference-direct-post), [Upload/Draft](https://developers.tiktok.com/docs/en/content-posting-api-get-started-upload-content), [post status](https://developers.tiktok.com/docs/en/content-posting-api-reference-get-video-status), [Android Share Kit/standard intents](https://developers.tiktok.com/docs/en/share-kit-android-quickstart-v2), and [content-sharing guidelines](https://developers.tiktok.com/doc/content-sharing-guidelines).
+
 ## Locale search
 
 Searches for Portuguese/Brazilian, English, Chinese, Russian, and Spanish TikTok content automation repositories were performed. The concrete project set above includes English and Chinese material. No distinct Portuguese-, Russian-, or Spanish-language repository was selected as sufficiently relevant and verifiable; this avoids inventing regional validation. Brazil coverage here comes from a source explicitly filtered to BR, not from repository language.
