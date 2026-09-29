@@ -1,5 +1,7 @@
 import json
+import io
 import subprocess
+from PIL import Image, ImageChops
 from server.growth_renderer import render_growth_plan
 
 def test_growth_plan_renders_vertical_mp4_audio_captions_manifest_and_thumbnail(tmp_path):
@@ -31,6 +33,13 @@ def test_growth_plan_renders_vertical_mp4_audio_captions_manifest_and_thumbnail(
         captions = (tmp_path / "captions.pt-BR.srt").read_text()
         assert captions.count(" --> ") == 3
         assert "\n\n" in captions and "Sinal público; TikTok UNKNOWN." in captions
+        frames = []
+        for when in (0.5, 1.5):
+            frame = subprocess.run(["ffmpeg", "-nostdin", "-loglevel", "error", "-ss", str(when),
+                "-i", str(output), "-frames:v", "1", "-f", "image2pipe", "-vcodec", "png", "pipe:1"],
+                capture_output=True, check=True).stdout
+            frames.append(Image.open(io.BytesIO(frame)).convert("RGB"))
+        assert ImageChops.difference(*frames).getbbox() is not None
     finally:
         cleanup()
 
