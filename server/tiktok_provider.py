@@ -134,3 +134,98 @@ def upload_video_bytes(upload_url: str, video: bytes) -> None:
 
 def fetch_publish_status(access_token: str, publish_id: str) -> dict:
     return _bearer_post(STATUS_URL, access_token, {"publish_id":publish_id})
+
+
+CONTENT_TARGET_SCOPE = {
+    "TIKTOK_OFFICIAL_DIRECT_POST": "video.publish",
+    "TIKTOK_OFFICIAL_UPLOAD_DRAFT": "video.upload",
+}
+
+
+class TikTokOfficialProvider:
+    """Fail-closed Content Posting boundary for controlled certification."""
+
+    provider = "TIKTOK_OFFICIAL"
+
+    def __init__(self, *, enabled: bool = False, content_posting_approved: bool = False,
+                 certified: bool = False):
+        self.enabled = bool(enabled)
+        self.content_posting_approved = bool(content_posting_approved)
+        self.certified = bool(certified)
+
+    @staticmethod
+    def _scopes(granted_scopes) -> set[str]:
+        if isinstance(granted_scopes, str):
+            return set(granted_scopes.replace(",", " ").split())
+        return {str(item) for item in granted_scopes or () if str(item)}
+
+    def capabilities(self, granted_scopes, *, active: bool = True) -> dict:
+        scopes = self._scopes(granted_scopes)
+        return {
+            "provider": self.provider,
+            "connection": "ACTIVE" if active else "UNKNOWN",
+            "contentPostingApproval": "APPROVED" if self.content_posting_approved else "NOT_PROVEN",
+            "videoUpload": "AVAILABLE" if active and self.content_posting_approved and "video.upload" in scopes
+                else "UNAVAILABLE",
+            "videoPublish": "AVAILABLE" if active and self.content_posting_approved and "video.publish" in scopes
+                else "UNAVAILABLE",
+            "realDispatch": "CERTIFICATION_REQUIRED",
+            "configuredDispatchFlag": self.enabled,
+            "certified": self.certified,
+            "grantedScopes": sorted(scopes),
+        }
+
+    def prepare(self, *, target: str, granted_scopes, active: bool,
+                artifact_verified: bool, contract_valid: bool, target_bound: bool) -> dict:
+        required_scope = CONTENT_TARGET_SCOPE.get(target)
+        if required_scope is None:
+            raise ProviderError("Unsupported TikTok delivery target")
+        scopes = self._scopes(granted_scopes)
+        if not active:
+            raise ProviderError("Active TikTok connection required")
+        if not self.content_posting_approved:
+            raise ProviderError("TikTok Content Posting approval is not proven")
+        if required_scope not in scopes:
+            raise ProviderError(f"Required TikTok scope is missing: {required_scope}")
+        if not artifact_verified:
+            raise ProviderError("Verified QUALITY_PASS artifact required")
+        if not contract_valid:
+            raise ProviderError("Frozen Action Contract / Effect Ledger binding required")
+        if not target_bound:
+            raise ProviderError("Target TikTok account binding required")
+        return {"target": target, "requiredScope": required_scope, "prepared": True}
+
+    def dry_run(self, **kwargs) -> dict:
+        prepared = self.prepare(**kwargs)
+        return {**prepared, "result": "DRY_RUN_ONLY", "externalEffect": False}
+
+    def dispatch(self, *args, **kwargs):
+        if not self.enabled:
+            raise ProviderError("TikTok real dispatch is disabled")
+        if not self.certified:
+            raise ProviderError("TikTok real dispatch is not certified")
+        raise ProviderError("Controlled real dispatch is intentionally unavailable in the correction gate")
+
+    def status(self, access_token: str, publish_id: str) -> dict:
+        if not publish_id:
+            raise ProviderError("publish_id is required")
+        return fetch_publish_status(access_token, publish_id)
+
+    def observe(self, access_token: str, publish_id: str) -> dict:
+        return self.status(access_token, publish_id)
+
+    @staticmethod
+    def reconcile(observation: dict) -> dict:
+        status = str(observation.get("status") or "")
+        public_ids = observation.get("publicaly_available_post_id") or []
+        if isinstance(public_ids, str):
+            public_ids = [public_ids]
+        public_ids = [str(item) for item in public_ids if item]
+        if status == "FAILED":
+            return {"state": "FAILED", "confirmed": False,
+                "failureReason": observation.get("fail_reason")}
+        if status == "PUBLISH_COMPLETE" and public_ids:
+            return {"state": "CONFIRMED", "confirmed": True, "publicPostId": public_ids[0]}
+        if status in {"PROCESSING_UPLOAD", "PROCESSING_DOWNLOAD", "SEND_TO_USER_INBOX", "PUBLISH_COMPLETE"}:
+            return {"state": "PROCESSING", "confirmed": False}
+        return {"state": "UNKNOWN", "confirmed": False}
