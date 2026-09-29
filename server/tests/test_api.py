@@ -186,6 +186,63 @@ def test_growth_workspace_reads_server_truth_and_controls(database):
     assert c.post("/v1/growth/control", json={"action": "NOT_A_CONTROL"}).status_code == 422
 
 
+def test_mobile_start_worker_ready_media_and_video_contract(database):
+    """Protect the mobile START -> queued worker -> READY -> overview/video path."""
+    from sqlalchemy import select
+    from server.growth_models import GrowthCreative, GrowthStateTransition
+    from server.growth_worker import claim_due_job, finish_internal_job
+    from server.trend_sources import TrendEvidence
+
+    now = datetime.now(timezone.utc)
+
+    class FixtureTrendSource:
+        def collect(self):
+            return [TrendEvidence("gtr-br-mobile-contract", "tema mobile", "PUBLIC_FIXTURE_RSS",
+                "https://example.test/mobile-contract", "BR", "BR_SIGNAL", "UNKNOWN", now, now,
+                {"views": None, "likes": None, "comments": None, "shares": None},
+                "mobile contract fixture; no TikTok metrics")]
+
+    c = TestClient(create_app(database, TOKEN, trend_source=FixtureTrendSource()),
+        headers={"Authorization": f"Bearer {TOKEN}"})
+    started = c.post("/v1/growth/control", json={"action": "START"})
+    assert started.status_code == 200
+    assert started.json()["mode"] == "RUNNING"
+    creative_id = started.json()["cycle"]["creativeId"]
+    experiment_id = started.json()["cycle"]["experimentId"]
+
+    engine = create_engine(database)
+    with Session(engine) as session:
+        prepare = claim_due_job(session, "mobile-contract-test")
+        assert prepare is not None and prepare.job_type == "PREPARE_ASSETS"
+        assert finish_internal_job(session, prepare) == "SUCCEEDED"
+        render = claim_due_job(session, "mobile-contract-test")
+        assert render is not None and render.job_type == "RENDER_VIDEO"
+        assert finish_internal_job(session, render) == "SUCCEEDED"
+
+        creative = session.get(GrowthCreative, creative_id)
+        assert creative is not None and creative.state == "READY"
+        assert creative.quality_status in {"QUALITY_PASS", "QUALITY_REVIEW"}
+        transitions = session.scalars(select(GrowthStateTransition).where(
+            GrowthStateTransition.experiment_id == experiment_id)).all()
+        transition_pairs = {(row.source_state, row.target_state) for row in transitions}
+        assert {("ASSETS_PENDING", "RENDERING"), ("RENDERING", "READY")} <= transition_pairs
+
+    overview = c.get("/v1/growth/overview").json()
+    assert overview["control"]["mode"] == "ACTION_REQUIRED"
+    media = next(item for item in overview["media"] if item["creativeId"] == creative_id)
+    assert len(media["mediaHash"]) == 64
+
+    response = c.get(media["videoUrl"])
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("video/mp4")
+    assert len(response.content) > 1000
+    assert response.headers["x-delivery-state"] == "LOCAL_RENDERED"
+    assert overview["capabilities"]["autonomousPublish"] == "NOT_PROVEN"
+    assert overview["capabilities"]["observe"] == "NOT_PROVEN"
+    assert overview["capabilities"]["learn"] == "NOT_PROVEN"
+    assert overview["capabilities"]["repeat"] == "NOT_PROVEN"
+
+
 def test_emergency_stop_blocks_queued_work_and_render_request(database):
     from server.growth_queue_models import GrowthJob
     from server.growth_queue_models import utcnow
