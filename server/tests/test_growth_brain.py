@@ -15,6 +15,14 @@ def test_trend_score_and_plan_are_evidence_bound():
     assert plan["objective"] == "LEGITIMATE_FOLLOWER_GROWTH_AND_INFORMATION_GAIN"
     assert plan["sourceEvidence"]["sourceRef"] == "ci://trend/space-1"
     assert plan["truth"] == "EVIDENCE_BACKED_INPUT"
+    assert plan["originalIdea"]["copyPolicy"] == "PATTERN_ONLY_NEVER_CONTENT"
+    assert plan["creativeDNA"]["hookFamily"] == plan["hookFamily"]
+    assert plan["provenance"]["thirdPartyMedia"] is False
+    assert plan["provenance"]["sourceMediaCopied"] is False
+    assert plan["provenance"]["engagementManipulation"] is False
+    assert plan["provenance"]["privateApi"] is False
+    assert plan["aigc"]["classification"] == "AI_GENERATED"
+    assert plan["aigc"]["disclosureRule"] == "DISCLOSE_WHEN_PLATFORM_FLOW_REQUIRES"
     assert plan["voice"]["faceless"] is True
     scenes = plan["scenePlan"]
     assert len(scenes) == 5 and scenes[0]["hook"] is True and scenes[0]["seconds"] <= 2
