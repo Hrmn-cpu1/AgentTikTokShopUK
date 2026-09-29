@@ -14,7 +14,6 @@ from .action_effects import record_effect_evidence
 from .delivery_models import DeliveryEffect
 from .growth_models import GrowthCreative, GrowthMediaArtifact, NicheHypothesis
 from .growth_queue_models import GrowthJob
-from .growth_models import GrowthQuotaEvent
 from .growth_runtime import QuotaExceeded, reserve_quota
 
 
