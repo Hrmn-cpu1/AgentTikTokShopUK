@@ -14,6 +14,7 @@ from .growth_renderer import render_growth_plan
 from .media_storage import (MediaArtifactCorrupt, MediaArtifactMissing, MediaQuotaExceeded,
     MediaStorageError, MediaStorageNotConfigured, RailwayVolumeMediaStore, artifact_object_key, hash_file)
 from . import delivery_models  # register delivery table without importing the gateway
+from .growth_policy import persist_policy_assessment
 
 logger = logging.getLogger(__name__)
 LEASE_SECONDS = 120
@@ -247,7 +248,7 @@ def _finish_verified_artifact(session: Session, job: GrowthJob, creative: Growth
     creative.creative_learning_eligible = False
     creative.style_baseline_eligible = False
     creative.exclusion_reason = "AWAITING_VERIFIED_PUBLICATION_AND_OBSERVATION"
-    if artifact.quality_status == "QUALITY_PASS":
+    if artifact.quality_status == "QUALITY_PASS" and creative.policy_status == "POLICY_PASS":
         creative.state = "READY"
         # Freeze device-handoff identity while the render lease is still current.
         # The Android share itself remains a later user-device action.
@@ -264,13 +265,13 @@ def _finish_verified_artifact(session: Session, job: GrowthJob, creative: Growth
         previous = control.mode
         control.mode = "ACTION_REQUIRED"
         control.updated_at = now
-        reason = ("MEDIA_READY: quality passed and durable SHA-256 readback verified"
-                  if artifact.quality_status == "QUALITY_PASS"
-                  else "Media is durable but quality requires owner review")
+        reason = ("MEDIA_READY: quality + policy passed and durable SHA-256 readback verified"
+                  if artifact.quality_status == "QUALITY_PASS" and creative.policy_status == "POLICY_PASS"
+                  else "Media is durable but quality/policy requires owner review")
         record_transition(session, previous, "ACTION_REQUIRED", reason,
                           creative.experiment_id, job.job_id)
     record_transition(session, old_state, creative.state,
-                      f"durable artifact {artifact.storage_state}; quality={artifact.quality_status}",
+                      f"durable artifact {artifact.storage_state}; quality={artifact.quality_status}; policy={creative.policy_status}",
                       creative.experiment_id, job.job_id)
     session.commit()
     # The original render remains until the row confirms STORED_VERIFIED.
@@ -312,6 +313,47 @@ def _persist_render_artifact(session: Session, job: GrowthJob, creative: GrowthC
     session.commit()
     return artifact
 
+
+
+def _enforce_policy_gate(session: Session, job: GrowthJob, creative: GrowthCreative,
+                         artifact: GrowthMediaArtifact, storage: RailwayVolumeMediaStore,
+                         manifest: dict) -> bool:
+    assessment = persist_policy_assessment(session, creative, artifact, manifest)
+    if assessment.policy_status == "POLICY_PASS":
+        record_transition(session, "QUALITY_PASS", "POLICY_PASS",
+            f"Brazil policy/originality gate passed; pack={assessment.policy_pack_version}",
+            creative.experiment_id, job.job_id)
+        session.commit()
+        return True
+
+    artifact.storage_state = "ARTIFACT_DISCARDED"
+    artifact.failure_reason = (
+        f"policy_gate_{assessment.policy_status.lower()}:{assessment.originality_status.lower()}"
+    )[:200]
+    creative.state = "BLOCKED"
+    creative.creative_learning_eligible = False
+    creative.style_baseline_eligible = False
+    creative.exclusion_reason = "POLICY_OR_ORIGINALITY_GATE_NOT_PASSED"
+    job.state = "BLOCKED"
+    job.last_error = artifact.failure_reason
+    _clear_job_lease(job)
+    control = session.get(GrowthControl, "default")
+    if control and control.mode in {"READY", "RUNNING"}:
+        old = control.mode
+        control.mode = "BLOCKED"
+        control.updated_at = utcnow()
+        record_transition(session, old, "BLOCKED",
+            "originality/policy gate stopped media before durable promotion",
+            creative.experiment_id, job.job_id)
+    record_transition(session, "QUALITY_PASS", assessment.policy_status,
+        "render retained only as disposable staging evidence; no handoff authorized",
+        creative.experiment_id, job.job_id)
+    session.commit()
+    try:
+        storage.cleanup_staging(artifact.staging_key)
+    except MediaStorageError:
+        logger.warning("Policy-blocked staging cleanup failed for %s", artifact.artifact_id)
+    return False
 
 def _finish_internal_job(session: Session, job: GrowthJob, *, media_store: RailwayVolumeMediaStore | None = None,
                          lease_identity: LeaseIdentity, heartbeat_lost: threading.Event):
@@ -367,6 +409,9 @@ def _finish_internal_job(session: Session, job: GrowthJob, *, media_store: Railw
                         expected_sha256=artifact.sha256, expected_size_bytes=artifact.size_bytes,
                         expected_content_type=artifact.content_type)
                 else:
+                    manifest = json.loads(artifact.quality_manifest)
+                    if not _enforce_policy_gate(session, job, creative, artifact, media_store, manifest):
+                        return job.state
                     artifact.storage_state = "STORING"
                     session.commit()
                     _guard_lease_commit(session, lease_identity)
@@ -415,6 +460,8 @@ def _finish_internal_job(session: Session, job: GrowthJob, *, media_store: Railw
                     return job.state
                 artifact = _persist_render_artifact(session, job, creative, media_store,
                     recovered_key, str(output), digest, manifest)
+                if not _enforce_policy_gate(session, job, creative, artifact, media_store, manifest):
+                    return job.state
                 artifact.storage_state = "STORING"
                 session.commit()
                 _guard_lease_commit(session, lease_identity)
@@ -509,6 +556,8 @@ def _finish_internal_job(session: Session, job: GrowthJob, *, media_store: Railw
             else:
                 artifact = _persist_render_artifact(session, job, creative, media_store,
                     staging_key, str(output), digest, manifest)
+                if not _enforce_policy_gate(session, job, creative, artifact, media_store, manifest):
+                    return job.state
                 artifact.storage_state = "STORING"
                 session.commit()
                 _guard_lease_commit(session, lease_identity)
