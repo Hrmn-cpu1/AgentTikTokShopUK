@@ -1,8 +1,9 @@
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import json
 import hashlib
 import pytest
+from uuid import uuid4
 
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session
@@ -250,7 +251,9 @@ def test_materialization_crash_recovery_matrix(database, tmp_path, monkeypatch, 
         job = GrowthJob(job_id="crash-job-" + crash_point, creative_id=creative_id,
             job_type="MATERIALIZE_DURABLE_MEDIA", idempotency_key=creative_id + ":MATERIALIZE_DURABLE_MEDIA",
             state="RUNNING", attempts=1, available_at=now, lease_owner="crashed-worker",
-            lease_until=now, created_at=now, updated_at=now)
+            lease_until=now-timedelta(seconds=1), lease_acquired_at=now-timedelta(minutes=2),
+            heartbeat_at=now-timedelta(minutes=2), lease_generation=1,
+            lease_attempt_id=str(uuid4()), created_at=now, updated_at=now)
         session.add(job)
         session.get(GrowthControl, "default").mode = "ACTION_REQUIRED"
         session.commit()
@@ -289,10 +292,11 @@ def test_materialization_crash_recovery_matrix(database, tmp_path, monkeypatch, 
 
     def forbidden_rerender(*args, **kwargs):
         raise AssertionError(f"crash recovery at {crash_point} must not rerender")
-    monkeypatch.setattr(worker, "render_growth_plan", forbidden_rerender)
-    with Session(engine) as session:
-        job = session.get(GrowthJob, "crash-job-" + crash_point)
-        assert finish_internal_job(session, job, media_store=store) == "SUCCEEDED"
+        monkeypatch.setattr(worker, "render_growth_plan", forbidden_rerender)
+        with Session(engine) as session:
+            job = claim_due_job(session, "recovery-worker")
+            assert job and job.job_id == "crash-job-" + crash_point and job.lease_generation == 2
+            assert finish_internal_job(session, job, media_store=store) == "SUCCEEDED"
         artifact = session.scalar(select(GrowthMediaArtifact).where(
             GrowthMediaArtifact.creative_id == creative_id))
         assert artifact is not None

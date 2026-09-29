@@ -367,9 +367,19 @@ def add_growth_routes(app, engine, require_operator, trend_source=None, media_st
             observations_count = total_observations
             follower_snapshot = followers[0] if followers else None
             current_job = next((job for job in jobs if job.state in {"PENDING", "RETRY", "RUNNING"}), None)
+            now_utc = datetime.now(timezone.utc)
+            lease_expiry = current_job.lease_until if current_job else None
+            if lease_expiry is not None and lease_expiry.tzinfo is None:
+                lease_expiry = lease_expiry.replace(tzinfo=timezone.utc)
+            lease_expired = bool(current_job and current_job.state == "RUNNING" and
+                (not lease_expiry or not current_job.lease_owner or not current_job.lease_attempt_id
+                 or lease_expiry <= now_utc))
             latest_creative = creatives[0] if creatives else None
-            if control.mode == "RUNNING":
-                current_activity = {"PREPARE_ASSETS": "Preparando ativos originais",
+            if lease_expired:
+                current_activity = "Worker sem heartbeat válido; aguardando recuperação da lease"
+            elif control.mode == "RUNNING":
+                current_activity = {
+                    "PREPARE_ASSETS": "Preparando ativos originais",
                     "RENDER_VIDEO": "Renderizando o vídeo", "DELIVERY_ACTION_REQUIRED": "Aguardando sua confirmação"}.get(
                         current_job.job_type if current_job else "", "Iniciando descoberta de tendências")
             elif control.mode == "ACTION_REQUIRED":
@@ -400,7 +410,14 @@ def add_growth_routes(app, engine, require_operator, trend_source=None, media_st
                     "learn": "NOT_PROVEN" if not learnings else "PARTIAL", "repeat": "NOT_PROVEN"},
                 "currentActivity": current_activity,
                 "currentJob": None if not current_job else {"jobId": current_job.job_id,
-                    "type": current_job.job_type, "state": current_job.state, "attempts": current_job.attempts,
+                    "type": current_job.job_type,
+                    "state": "RECOVERING" if lease_expired else current_job.state,
+                    "attempts": current_job.attempts, "owner": current_job.lease_owner,
+                    "leaseGeneration": current_job.lease_generation,
+                    "leaseAcquiredAt": current_job.lease_acquired_at.isoformat() if current_job.lease_acquired_at else None,
+                    "leaseExpiresAt": current_job.lease_until.isoformat() if current_job.lease_until else None,
+                    "heartbeatAt": current_job.heartbeat_at.isoformat() if current_job.heartbeat_at else None,
+                    "attemptId": current_job.lease_attempt_id, "revision": current_job.revision,
                     "lastError": current_job.last_error},
                 "lastTransition": None if not latest_transition else {"from":latest_transition.source_state,
                     "to":latest_transition.target_state,"reason":latest_transition.reason,

@@ -2,14 +2,14 @@ from datetime import timedelta
 import json
 from uuid import uuid4
 
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, select, update
 from sqlalchemy.orm import Session
 
 from server.models import Base
 from server.growth_models import GrowthControl, GrowthCreative, NicheHypothesis, TrendSignal, PublicationIntent
 from server.growth_queue_models import GrowthJob, utcnow
 from server.growth_worker import claim_due_job, enqueue_job
-from server.growth_worker import finish_internal_job
+from server.growth_worker import finish_internal_job, renew_lease, _capture_lease, _LeaseHeartbeat, LeaseLostError
 from server.growth_brain import TrendCandidate, build_creative_plan, canonical_plan
 from server.media_storage import RailwayVolumeMediaStore
 from server.growth_models import GrowthMediaArtifact
@@ -68,6 +68,64 @@ def test_expired_running_job_is_reclaimed_after_process_restart(tmp_path):
         assert claimed.state == "RUNNING"
         assert claimed.lease_owner == "replacement-worker"
         assert claimed.attempts == 2
+        assert claimed.lease_generation == 1
+
+
+def test_heartbeat_renews_active_lease_without_changing_fence(tmp_path, monkeypatch):
+    import server.growth_worker as worker
+    engine, creative_id = queue_db(tmp_path)
+    with Session(engine) as session:
+        enqueue_job(session, creative_id, "PREPARE_ASSETS")
+        session.commit()
+        claimed = claim_due_job(session, "heartbeat-worker")
+        identity = _capture_lease(claimed)
+        generation = claimed.lease_generation
+        initial_heartbeat = claimed.heartbeat_at
+    monkeypatch.setattr(worker, "HEARTBEAT_SECONDS", 0.03)
+    heartbeat = _LeaseHeartbeat(engine, identity)
+    heartbeat.start()
+    import time
+    time.sleep(0.12)
+    heartbeat.close()
+    with Session(engine) as session:
+        current = session.get(GrowthJob, claimed.job_id)
+        assert not heartbeat.lost.is_set()
+        assert current.lease_generation == generation
+        assert current.heartbeat_at > initial_heartbeat
+
+
+def test_stale_worker_cannot_heartbeat_or_mutate_after_takeover(tmp_path):
+    engine, creative_id = queue_db(tmp_path)
+    with Session(engine) as claimant:
+        job = enqueue_job(claimant, creative_id, "PREPARE_ASSETS")
+        claimant.commit()
+        first = claim_due_job(claimant, "worker-A")
+        stale_identity = _capture_lease(first)
+
+    with Session(engine) as takeover:
+        takeover.execute(update(GrowthJob).where(GrowthJob.job_id == first.job_id)
+            .values(lease_until=utcnow()-timedelta(seconds=1)))
+        takeover.commit()
+        second = claim_due_job(takeover, "worker-B")
+        assert second.lease_generation == stale_identity.generation + 1
+        assert second.lease_owner == "worker-B"
+
+    with Session(engine) as stale_session:
+        stale_job = stale_session.get(GrowthJob, first.job_id)
+        assert renew_lease(stale_session, stale_identity) is False
+        stale_session.rollback()
+        try:
+            finish_internal_job(stale_session, stale_job, lease_identity=stale_identity)
+            assert False, "stale owner must not complete the job"
+        except LeaseLostError:
+            stale_session.rollback()
+
+    with Session(engine) as verify:
+        current = verify.get(GrowthJob, first.job_id)
+        creative = verify.get(GrowthCreative, creative_id)
+        assert current.lease_owner == "worker-B"
+        assert current.state == "RUNNING"
+        assert creative.state == "SCRIPTED"
 
 
 def test_paused_control_prevents_worker_claim(tmp_path):
@@ -171,7 +229,9 @@ def test_restart_reconciles_same_artifact_without_rerender(tmp_path, monkeypatch
         render = GrowthJob(job_id="restart-render-job", creative_id=creative_id,
             job_type="MATERIALIZE_DURABLE_MEDIA", idempotency_key="restart-render-job", state="RUNNING",
             attempts=1, available_at=utcnow(), lease_owner="old-worker",
-            lease_until=utcnow()+timedelta(minutes=1), created_at=utcnow(), updated_at=utcnow())
+            lease_until=utcnow()+timedelta(minutes=1), lease_acquired_at=utcnow(),
+            heartbeat_at=utcnow(), lease_generation=1, lease_attempt_id=str(uuid4()),
+            created_at=utcnow(), updated_at=utcnow())
         session.add(render)
         session.commit()
         assert worker.finish_internal_job(session, render, media_store=store) == "SUCCEEDED"
@@ -187,6 +247,9 @@ def test_restart_reconciles_same_artifact_without_rerender(tmp_path, monkeypatch
         artifact.storage_state = "STORED_UNVERIFIED"
         render.state = "RUNNING"
         render.attempts = 2
+        render.lease_owner = "crashed-worker"
+        render.lease_until = utcnow() - timedelta(seconds=1)
+        render.lease_attempt_id = str(uuid4())
         creative.state = "RENDERING"
         session.get(GrowthControl, "default").mode = "ACTION_REQUIRED"
         session.commit()
@@ -194,7 +257,9 @@ def test_restart_reconciles_same_artifact_without_rerender(tmp_path, monkeypatch
         def forbidden_rerender(*args, **kwargs):
             raise AssertionError("restart recovery must not re-render")
         monkeypatch.setattr(worker, "render_growth_plan", forbidden_rerender)
-        assert worker.finish_internal_job(session, render, media_store=store) == "SUCCEEDED"
+        recovered_job = claim_due_job(session, "replacement-worker")
+        assert recovered_job is not None and recovered_job.lease_generation > 1
+        assert worker.finish_internal_job(session, recovered_job, media_store=store) == "SUCCEEDED"
         session.refresh(artifact)
         assert (artifact.artifact_id, artifact.sha256, artifact.size_bytes,
             artifact.object_key, artifact.source_render_attempt) == original_identity

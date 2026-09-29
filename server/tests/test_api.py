@@ -216,6 +216,12 @@ def test_mobile_start_worker_ready_media_and_video_contract(database, tmp_path):
     with Session(engine) as session:
         prepare = claim_due_job(session, "mobile-contract-test")
         assert prepare is not None and prepare.job_type == "PREPARE_ASSETS"
+        current_job = c.get("/v1/growth/overview").json()["currentJob"]
+        assert current_job["state"] == "RUNNING"
+        assert current_job["owner"] == "mobile-contract-test"
+        assert current_job["leaseGeneration"] == prepare.lease_generation
+        assert current_job["attemptId"] == prepare.lease_attempt_id
+        assert current_job["heartbeatAt"] and current_job["leaseExpiresAt"]
         assert finish_internal_job(session, prepare) == "SUCCEEDED"
         render = claim_due_job(session, "mobile-contract-test")
         assert render is not None and render.job_type == "RENDER_VIDEO"

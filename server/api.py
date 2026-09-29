@@ -5,6 +5,7 @@ import json
 import os
 import threading
 import logging
+from pathlib import Path
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Literal
@@ -19,6 +20,7 @@ from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import create_engine, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
+from alembic.script import ScriptDirectory
 
 from .models import CommerceEvent, Experiment, ExperimentCost, ExperimentCostAdjustment, LaunchIntent, LearningRecord, OpportunityEvidence, ProductEvidence, TikTokConnection
 from .connection_api import add_connection_routes, utc
@@ -166,7 +168,8 @@ def create_app(database_url: str | None = None, operator_token: str | None = Non
             with engine.connect() as conn:
                 revision = conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
                 conn.execute(text("SELECT 1")).scalar_one()
-            if revision != "0010_durable_media_artifacts":
+            expected_revision = ScriptDirectory(str(Path(__file__).resolve().parent / "migrations")).get_current_head()
+            if revision != expected_revision:
                 raise HTTPException(503, "Database migration required")
         except HTTPException:
             raise

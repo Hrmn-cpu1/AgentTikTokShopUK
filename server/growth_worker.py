@@ -6,7 +6,7 @@ import os
 import threading
 import time
 from uuid import uuid4
-from sqlalchemy import select
+from sqlalchemy import select, update, event, func
 from sqlalchemy.orm import Session
 from .growth_models import GrowthControl, GrowthCreative, GrowthMediaArtifact, GrowthStateTransition
 from .growth_queue_models import GrowthJob, utcnow
@@ -15,6 +15,109 @@ from .media_storage import (MediaArtifactCorrupt, MediaArtifactMissing, MediaQuo
     MediaStorageError, MediaStorageNotConfigured, RailwayVolumeMediaStore, artifact_object_key, hash_file)
 
 logger = logging.getLogger(__name__)
+LEASE_SECONDS = 120
+HEARTBEAT_SECONDS = 30
+
+
+class LeaseLostError(RuntimeError):
+    """Raised when PostgreSQL says this worker no longer owns the job."""
+
+
+class LeaseIdentity:
+    __slots__ = ("job_id", "owner", "generation", "attempt_id")
+
+    def __init__(self, job_id: str, owner: str, generation: int, attempt_id: str):
+        self.job_id, self.owner = job_id, owner
+        self.generation, self.attempt_id = generation, attempt_id
+
+
+def _capture_lease(job: GrowthJob) -> LeaseIdentity:
+    if not job.lease_owner or not job.lease_attempt_id or not job.lease_generation:
+        raise LeaseLostError("claimed job has no complete lease identity")
+    return LeaseIdentity(job.job_id, job.lease_owner, job.lease_generation, job.lease_attempt_id)
+
+
+def renew_lease(session: Session, identity: LeaseIdentity, *, seconds: int = LEASE_SECONDS) -> bool:
+    now = utcnow()
+    db_clock = session.get_bind().dialect.name == "postgresql"
+    # Unlike PostgreSQL now(), clock_timestamp() is not frozen at transaction start.
+    clock = func.clock_timestamp() if db_clock else now
+    result = session.execute(update(GrowthJob).where(
+        GrowthJob.job_id == identity.job_id,
+        GrowthJob.state == "RUNNING",
+        GrowthJob.lease_owner == identity.owner,
+        GrowthJob.lease_generation == identity.generation,
+        GrowthJob.lease_attempt_id == identity.attempt_id,
+        GrowthJob.lease_until > clock,
+    ).values(lease_until=clock + timedelta(seconds=seconds), heartbeat_at=clock,
+             revision=GrowthJob.revision + 1, updated_at=clock),
+       execution_options={"synchronize_session": "fetch"})
+    if result.rowcount != 1:
+        current = session.execute(select(GrowthJob.state, GrowthJob.lease_owner,
+            GrowthJob.lease_generation, GrowthJob.lease_attempt_id, GrowthJob.lease_until)
+            .where(GrowthJob.job_id == identity.job_id)).one_or_none()
+        logger.warning("Lease CAS rejected job=%s owner=%s generation=%s attempt=%s",
+                       identity.job_id, identity.owner, identity.generation, identity.attempt_id)
+        logger.warning("Current DB lease snapshot=%s", current)
+    return result.rowcount == 1
+
+
+def _guard_lease_commit(session: Session, identity: LeaseIdentity):
+    # The conditional UPDATE is both a fence check and a row lock held through commit.
+    marker = (identity.job_id, identity.owner, identity.generation, identity.attempt_id)
+    if session.info.get("growth_lease_guard") == marker:
+        return
+    with session.no_autoflush:
+        if not renew_lease(session, identity):
+            raise LeaseLostError(f"lease lost for job {identity.job_id}")
+    session.info["growth_lease_guard"] = marker
+
+
+def _install_lease_guard(session: Session, identity: LeaseIdentity):
+    def before_flush(current_session, flush_context, instances):
+        _guard_lease_commit(current_session, identity)
+    event.listen(session, "before_flush", before_flush)
+    event.listen(session, "after_commit", _clear_lease_guard)
+    event.listen(session, "after_rollback", _clear_lease_guard)
+    return before_flush
+
+
+def _remove_lease_guard(session: Session, listener):
+    event.remove(session, "before_flush", listener)
+    event.remove(session, "after_commit", _clear_lease_guard)
+    event.remove(session, "after_rollback", _clear_lease_guard)
+
+
+def _clear_lease_guard(current_session):
+    current_session.info.pop("growth_lease_guard", None)
+
+
+class _LeaseHeartbeat:
+    def __init__(self, engine, identity: LeaseIdentity):
+        self.engine, self.identity = engine, identity
+        self.lost = threading.Event()
+        self.stop = threading.Event()
+        self.thread = threading.Thread(target=self._run, daemon=True)
+
+    def start(self):
+        self.thread.start()
+
+    def close(self):
+        self.stop.set()
+        self.thread.join(timeout=HEARTBEAT_SECONDS + 2)
+
+    def _run(self):
+        while not self.stop.wait(HEARTBEAT_SECONDS):
+            try:
+                with Session(self.engine) as session:
+                    if not renew_lease(session, self.identity):
+                        self.lost.set()
+                        return
+                    session.commit()
+            except Exception:
+                logger.exception("Heartbeat failed for growth job %s", self.identity.job_id)
+                self.lost.set()
+                return
 
 def record_transition(session: Session, source: str, target: str, reason: str,
                       experiment_id: str | None = None, job_id: str | None = None):
@@ -41,14 +144,22 @@ def seed_scripted_creatives(session: Session):
     session.commit()
     return len(rows)
 
-def claim_due_job(session: Session, worker_id: str, *, media_storage_available: bool = True):
+def claim_due_job(session: Session, worker_id: str, *, media_storage_available: bool = True,
+                  specific_job_id: str | None = None):
     control = session.get(GrowthControl, "default")
     mode = control.mode if control is not None else "READY"
     if mode not in {"READY", "RUNNING", "ACTION_REQUIRED"}:
         return None
     now = utcnow()
+    db_clock = session.get_bind().dialect.name == "postgresql"
+    clock = func.clock_timestamp() if db_clock else now
     query = select(GrowthJob).where(
-        ((GrowthJob.state.in_(("PENDING", "RETRY"))) | ((GrowthJob.state == "RUNNING") & (GrowthJob.lease_until < now))), GrowthJob.available_at <= now)
+        ((GrowthJob.state.in_(("PENDING", "RETRY"))) |
+         ((GrowthJob.state == "RUNNING") &
+          ((GrowthJob.lease_until < clock) | (GrowthJob.lease_attempt_id.is_(None))))),
+        GrowthJob.available_at <= clock)
+    if specific_job_id is not None:
+        query = query.where(GrowthJob.job_id == specific_job_id)
     # ACTION_REQUIRED remains latched for the earlier delivery. Only the explicit,
     # no-publication media materialization job may run through that gate.
     if mode == "ACTION_REQUIRED":
@@ -57,18 +168,29 @@ def claim_due_job(session: Session, worker_id: str, *, media_storage_available: 
         query = query.where(GrowthJob.job_type != "MATERIALIZE_DURABLE_MEDIA")
     if not media_storage_available:
         query = query.where(GrowthJob.job_type.notin_(("RENDER_VIDEO", "MATERIALIZE_DURABLE_MEDIA")))
-    job = session.scalar(query
+    candidate = session.scalar(query
         .order_by(GrowthJob.available_at).with_for_update(skip_locked=True).limit(1))
-    if not job:
+    if not candidate:
         return None
-    job.state = "RUNNING"
-    job.lease_owner = worker_id
-    job.lease_until = now + timedelta(seconds=120)
-    job.attempts += 1
-    job.updated_at = now
+    attempt_id = str(uuid4())
+    result = session.execute(update(GrowthJob).where(
+        GrowthJob.job_id == candidate.job_id,
+        ((GrowthJob.state.in_(("PENDING", "RETRY"))) |
+         ((GrowthJob.state == "RUNNING") &
+          ((GrowthJob.lease_until < clock) | (GrowthJob.lease_attempt_id.is_(None))))),
+        GrowthJob.available_at <= clock,
+    ).values(state="RUNNING", lease_owner=worker_id,
+             lease_acquired_at=clock, heartbeat_at=clock,
+             lease_until=clock + timedelta(seconds=LEASE_SECONDS),
+             lease_generation=GrowthJob.lease_generation + 1,
+             lease_attempt_id=attempt_id, attempts=GrowthJob.attempts + 1,
+             revision=GrowthJob.revision + 1, updated_at=now),
+       execution_options={"synchronize_session": False})
+    if result.rowcount != 1:
+        session.rollback()
+        return None
     session.commit()
-    session.refresh(job)
-    return job
+    return session.get(GrowthJob, candidate.job_id)
 
 def _clear_job_lease(job: GrowthJob):
     job.lease_owner = None
@@ -186,7 +308,8 @@ def _persist_render_artifact(session: Session, job: GrowthJob, creative: GrowthC
     return artifact
 
 
-def finish_internal_job(session: Session, job: GrowthJob, *, media_store: RailwayVolumeMediaStore | None = None):
+def _finish_internal_job(session: Session, job: GrowthJob, *, media_store: RailwayVolumeMediaStore | None = None,
+                         lease_identity: LeaseIdentity, heartbeat_lost: threading.Event):
     control = session.get(GrowthControl, "default")
     is_action_required_materialization = (job.job_type == "MATERIALIZE_DURABLE_MEDIA"
         and control is not None and control.mode == "ACTION_REQUIRED")
@@ -241,6 +364,7 @@ def finish_internal_job(session: Session, job: GrowthJob, *, media_store: Railwa
                 else:
                     artifact.storage_state = "STORING"
                     session.commit()
+                    _guard_lease_commit(session, lease_identity)
                     media_store.promote_staging(object_key=artifact.object_key,
                         staging_key=artifact.staging_key, expected_sha256=artifact.sha256,
                         expected_size_bytes=artifact.size_bytes)
@@ -288,6 +412,7 @@ def finish_internal_job(session: Session, job: GrowthJob, *, media_store: Railwa
                     recovered_key, str(output), digest, manifest)
                 artifact.storage_state = "STORING"
                 session.commit()
+                _guard_lease_commit(session, lease_identity)
                 media_store.promote_staging(object_key=artifact.object_key,
                     staging_key=artifact.staging_key, expected_sha256=artifact.sha256,
                     expected_size_bytes=artifact.size_bytes)
@@ -328,6 +453,8 @@ def finish_internal_job(session: Session, job: GrowthJob, *, media_store: Railwa
         except MediaStorageError as exc:
             return _retry_storage_job(session, job, creative, None, type(exc).__name__)
         def cancelled():
+            if heartbeat_lost is not None and heartbeat_lost.is_set():
+                return True
             session.expire_all()
             current = session.get(GrowthControl, "default")
             return current is not None and current.mode not in {"READY", "RUNNING"} and not (
@@ -379,6 +506,7 @@ def finish_internal_job(session: Session, job: GrowthJob, *, media_store: Railwa
                     staging_key, str(output), digest, manifest)
                 artifact.storage_state = "STORING"
                 session.commit()
+                _guard_lease_commit(session, lease_identity)
                 media_store.promote_staging(object_key=artifact.object_key,
                     staging_key=artifact.staging_key, expected_sha256=artifact.sha256,
                     expected_size_bytes=artifact.size_bytes)
@@ -412,6 +540,25 @@ def finish_internal_job(session: Session, job: GrowthJob, *, media_store: Railwa
     return job.state
 
 
+def finish_internal_job(session: Session, job: GrowthJob, *, media_store: RailwayVolumeMediaStore | None = None,
+                        lease_identity: LeaseIdentity | None = None):
+    identity = lease_identity or _capture_lease(job)
+    if identity.job_id != job.job_id:
+        raise LeaseLostError("lease identity does not match job")
+    listener = _install_lease_guard(session, identity)
+    heartbeat = _LeaseHeartbeat(session.get_bind(), identity)
+    heartbeat_lost = heartbeat.lost
+    heartbeat.start()
+    try:
+        _guard_lease_commit(session, identity)
+        session.commit()
+        return _finish_internal_job(session, job, media_store=media_store, lease_identity=identity,
+                                    heartbeat_lost=heartbeat_lost)
+    finally:
+        heartbeat.close()
+        _remove_lease_guard(session, listener)
+
+
 def run_growth_worker(engine, stop: threading.Event, poll_seconds: float = 1.0):
     """Single-process Railway poller; work and leases remain in PostgreSQL."""
     from sqlalchemy.orm import Session
@@ -427,31 +574,47 @@ def run_growth_worker(engine, stop: threading.Event, poll_seconds: float = 1.0):
             with Session(engine) as session:
                 job = claim_due_job(session, worker_id, media_storage_available=media_store is not None)
                 job_id = job.job_id if job else None
+                lease_identity = _capture_lease(job) if job else None
             if job_id:
                 with Session(engine) as session:
                     current = session.get(GrowthJob, job_id)
                     try:
                         if current is not None and current.state == "RUNNING":
-                            finish_internal_job(session, current, media_store=media_store)
+                            finish_internal_job(session, current, media_store=media_store,
+                                                lease_identity=lease_identity)
+                    except LeaseLostError:
+                        session.rollback()
+                        logger.warning("Growth worker stopped after losing lease for %s", job_id)
                     except InterruptedError:
                         session.rollback()
                         current = session.get(GrowthJob, job_id)
                         control = session.get(GrowthControl, "default")
                         if current is not None:
-                            old = current.state
-                            current.state = "BLOCKED" if control and control.mode == "STOPPED" else "PENDING"
-                            current.last_error = "cancelled_at_safe_checkpoint"
-                            current.lease_owner = None
-                            current.lease_until = None
-                            current.updated_at = utcnow()
-                            record_transition(session, old, current.state, current.last_error,
-                                              job_id=current.job_id)
-                            session.commit()
+                            listener = _install_lease_guard(session, lease_identity)
+                            try:
+                                old = current.state
+                                current.state = "BLOCKED" if control and control.mode == "STOPPED" else "PENDING"
+                                current.last_error = "cancelled_at_safe_checkpoint"
+                                current.lease_owner = None
+                                current.lease_until = None
+                                current.updated_at = utcnow()
+                                record_transition(session, old, current.state, current.last_error,
+                                                  job_id=current.job_id)
+                                session.commit()
+                            except LeaseLostError:
+                                session.rollback()
+                                logger.warning("Ignored stale cancellation for growth job %s", job_id)
+                            finally:
+                                _remove_lease_guard(session, listener)
                     except Exception as exc:
                         session.rollback()
                         current = session.get(GrowthJob, job_id)
                         if current is not None and current.state == "RUNNING":
-                            retry_or_fail_job(session, current, type(exc).__name__)
+                            try:
+                                retry_or_fail_job(session, current, type(exc).__name__, lease_identity=lease_identity)
+                            except LeaseLostError:
+                                session.rollback()
+                                logger.warning("Ignored stale failure recovery for growth job %s", job_id)
                         logger.exception("Growth job %s failed", job_id)
                 continue
         except InterruptedError:
@@ -461,7 +624,9 @@ def run_growth_worker(engine, stop: threading.Event, poll_seconds: float = 1.0):
         stop.wait(poll_seconds)
 
 
-def retry_or_fail_job(session: Session, job: GrowthJob, error: str, max_attempts: int = 3):
+def retry_or_fail_job(session: Session, job: GrowthJob, error: str, max_attempts: int = 3,
+                      *, lease_identity: LeaseIdentity | None = None):
+    identity = lease_identity or _capture_lease(job)
     old = job.state
     now = utcnow()
     if job.attempts < max_attempts:
@@ -482,4 +647,8 @@ def retry_or_fail_job(session: Session, job: GrowthJob, error: str, max_attempts
     job.updated_at = now
     record_transition(session, old, job.state, "bounded retry after internal worker failure",
                       job_id=job.job_id, experiment_id=None)
-    session.commit()
+    listener = _install_lease_guard(session, identity)
+    try:
+        session.commit()
+    finally:
+        _remove_lease_guard(session, listener)
