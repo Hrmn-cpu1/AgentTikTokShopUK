@@ -8,6 +8,7 @@ import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
+from .creative_style import HOOK_FAMILIES, MR_WHO_STYLE
 
 NICHE_FAMILIES = (
     "storytelling", "curiosidades", "humor", "pets", "motivacao",
@@ -49,11 +50,39 @@ def choose_niche(candidate: TrendCandidate, existing_counts: dict[str, int] | No
     seed = hashlib.sha256((candidate.topic + "|" + candidate.source_ref).encode()).digest()[0]
     return underexplored[seed % len(underexplored)]
 
-def build_creative_plan(candidate: TrendCandidate, niche: str) -> dict[str, Any]:
+def choose_hook_family(candidate: TrendCandidate, existing_counts: dict[str, int] | None = None) -> str:
+    counts = existing_counts or {}
+    minimum = min((counts.get(name, 0) for name in HOOK_FAMILIES), default=0)
+    choices = [name for name in HOOK_FAMILIES if counts.get(name, 0) == minimum]
+    seed = hashlib.sha256((candidate.topic + "|" + candidate.source_ref + "|hook-v1").encode()).digest()[1]
+    return choices[seed % len(choices)]
+
+
+def _hook_text(topic: str, family: str) -> str:
+    short = topic if len(topic) <= 32 else topic[:29].rsplit(" ", 1)[0] + "…"
+    templates = {
+        "curiosity": f"O detalhe por trás de {short}?",
+        "unexpected_fact": f"Uma pergunta sobre {short}.",
+        "challenge": f"Explique {short} em 10 segundos.",
+        "comparison": f"{short}: busca alta ou fato?",
+        "visual_surprise": f"Olhe {short} por outro ângulo.",
+        "question": f"Por que {short} está em alta?",
+        "contrarian_angle": f"Busca alta não prova {short}.",
+        "before_after": f"Antes de compartilhar {short}, pare.",
+        "mini_story": f"Uma busca trouxe esta pergunta: {short}.",
+        "open_loop": f"A resposta sobre {short} depende de um detalhe.",
+    }
+    return templates[family]
+
+
+def build_creative_plan(candidate: TrendCandidate, niche: str, hook_family: str | None = None) -> dict[str, Any]:
     topic = " ".join(candidate.topic.strip().split())[:180]
     if not topic or niche not in NICHE_FAMILIES:
         raise ValueError("valid topic and supported niche are required")
-    hook = "Por que tanto interesse?"
+    hook_family = hook_family or choose_hook_family(candidate)
+    if hook_family not in HOOK_FAMILIES:
+        raise ValueError("unsupported Mr.Who? hook family")
+    hook = _hook_text(topic, hook_family)
     short_topic = topic if len(topic) <= 34 else topic[:31].rsplit(" ", 1)[0] + "…"
     script = [
         f"“{short_topic}” surgiu nas buscas do Brasil.",
@@ -63,6 +92,10 @@ def build_creative_plan(candidate: TrendCandidate, niche: str) -> dict[str, Any]
     ]
     return {
         "schemaVersion": 1,
+        "purpose": "EXPERIMENT",
+        "creativeStyle": {"styleId": MR_WHO_STYLE["style_id"], "styleVersion": MR_WHO_STYLE["style_version"]},
+        "hookFamily": hook_family,
+        "hookVersion": "1",
         "market": "BR",
         "language": "pt-BR",
         "objective": "LEGITIMATE_FOLLOWER_GROWTH_AND_INFORMATION_GAIN",

@@ -16,5 +16,6 @@ COPY server ./server
 COPY alembic.ini ./alembic.ini
 COPY --from=frontend /app/dist ./dist
 ENV FRONTEND_DIST_DIR=/app/dist
+ENV GROWTH_WORKER_ENABLED=1
 EXPOSE 8000
 CMD ["sh", "-c", "alembic upgrade head && uvicorn server.api:create_app --factory --host 0.0.0.0 --port ${PORT:-8000} --no-access-log"]

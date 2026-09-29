@@ -126,8 +126,47 @@ def test_public_trend_to_original_mp4_is_idempotent_and_does_not_claim_delivery(
         assert creative.state == "READY" and creative.media_hash == media.headers["x-creative-sha256"]
 
 
+def test_observation_keeps_fourteen_views_out_of_learning_and_public_feed(database):
+    from server.trend_sources import TrendEvidence
+    now = datetime.now(timezone.utc)
+    class FixtureTrendSource:
+        def collect(self):
+            return [TrendEvidence("gtr-br-observation-test", "tema de observação", "PUBLIC_FIXTURE_RSS",
+                "https://example.test/trends", "BR", "BR_SIGNAL", "UNKNOWN", now, now,
+                {"views":None,"likes":None,"comments":None,"shares":None}, "public test signal")]
+    app = create_app(database, TOKEN, trend_source=FixtureTrendSource())
+    c = TestClient(app, headers={"Authorization": f"Bearer {TOKEN}"})
+    result = c.post("/v1/growth/run").json()
+    rendered = c.get(result["videoUrl"])
+    assert rendered.status_code == 200
+    observation = {"observation_id":"obs-14-views","creative_id":result["creativeId"],
+        "source":"OWNER_TIKTOK_UI","publication_identity":"https://vt.tiktok.com/example123",
+        "truth_classification":"OWNER_REPORTED","evidence_ref":"operator-supplied-screen:obs-14",
+        "observed_at":datetime.now(timezone.utc).isoformat(),"views":14,"likes":1,
+        "comments":0,"shares":0}
+    response = c.post("/v1/growth/observations",json=observation)
+    assert response.status_code==200
+    assert response.json()["truth"]=="OWNER_REPORTED"
+    assert response.json()["learningEligibility"]=="OBSERVED_BUT_NOT_LEARNING_ELIGIBLE"
+    assert response.json()["exclusionReason"]=="INSUFFICIENT_SAMPLE_VIEWS"
+    assert response.json()["learning"]["verdict"]=="INSUFFICIENT_EVIDENCE"
+    assert c.post("/v1/growth/observations",json=observation).json()["duplicate"] is True
+    public = TestClient(app).get("/v1/public/mrwho/feed")
+    assert public.status_code==200
+    assert public.json()=={"brand":"Mr.Who?","commerceEnabled":False,"items":[]}
+
+
 def test_growth_workspace_reads_server_truth_and_controls(database):
-    c = client(database)
+    from server.trend_sources import TrendEvidence
+    class FixtureTrendSource:
+        def collect(self):
+            now = datetime.now(timezone.utc)
+            return [TrendEvidence("gtr-br-control-test", "tema do teste", "PUBLIC_FIXTURE_RSS",
+                "https://example.test/trends", "BR", "BR_SIGNAL", "UNKNOWN", now, now,
+                {"google_approx_traffic_raw":"1,000+", "views":None, "likes":None,
+                 "comments":None, "shares":None}, "control fixture")]
+    c = TestClient(create_app(database, TOKEN, trend_source=FixtureTrendSource()),
+        headers={"Authorization": f"Bearer {TOKEN}"})
     initial = c.get("/v1/growth/overview").json()
     assert initial["control"]["mode"] == "READY"
     assert initial["control"]["scheduler"] == "NOT_CONFIGURED"
@@ -137,7 +176,13 @@ def test_growth_workspace_reads_server_truth_and_controls(database):
     assert paused.status_code == 200 and paused.json()["mode"] == "PAUSED"
     assert c.post("/v1/growth/run").status_code == 409
     started = c.post("/v1/growth/control", json={"action": "START"})
-    assert started.status_code == 200 and started.json()["mode"] == "READY"
+    assert started.status_code == 200 and started.json()["mode"] == "RUNNING"
+    assert started.json()["cycle"]["jobState"] == "PENDING"
+    repeated_start = c.post("/v1/growth/control", json={"action":"START"})
+    assert repeated_start.status_code == 200 and repeated_start.json()["duplicate"] is True
+    assert c.get("/v1/growth/overview").json()["counts"]["experiments"] == 1
+    assert c.post("/v1/growth/control", json={"action":"PAUSE"}).json()["mode"] == "PAUSED"
+    assert c.post("/v1/growth/control", json={"action":"PAUSE"}).json()["duplicate"] is True
     assert c.post("/v1/growth/control", json={"action": "NOT_A_CONTROL"}).status_code == 422
 
 
@@ -162,6 +207,7 @@ def test_emergency_stop_blocks_queued_work_and_render_request(database):
         session.commit()
     stopped = c.post("/v1/growth/control", json={"action": "EMERGENCY_STOP"})
     assert stopped.status_code == 200 and stopped.json()["mode"] == "STOPPED"
+    assert c.post("/v1/growth/control", json={"action":"EMERGENCY_STOP"}).json()["duplicate"] is True
     with Session(create_engine(database)) as session:
         assert session.get(GrowthJob, "pending-stop-test").state == "BLOCKED"
     assert c.get(result["videoUrl"]).status_code == 409

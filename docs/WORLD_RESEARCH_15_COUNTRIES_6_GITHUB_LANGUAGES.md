@@ -260,11 +260,11 @@ Vocabulário usado: generación de vídeo corto, cola de trabajos, reintento, id
 | Ação visível | Efeito real | Resultado verificável | Contrato/falha observada |
 | --- | --- | --- | --- |
 | Navegação Início/Experimentos/Mídia/Analytics/Ferramentas | muda aba local | `aria-current` e tela escolhida | nenhuma mutação remota |
-| START AGENT | POST control `START` | servidor retorna `READY` | habilita ação sob demanda; não inicia scheduler |
-| RODAR UM EXPERIMENTO | POST `/v1/growth/run`, depois GET do MP4 | evidência de busca, creativeId, render local | dedupe por trend id; não significa TikTok publicado |
-| PAUSE AGENT | POST `PAUSE` | servidor `PAUSED`, bloqueia início e checkpoint de render | reversível via START |
-| EMERGENCY STOP | confirmação, POST `EMERGENCY_STOP` | `STOPPED`, jobs pendentes/retry bloqueados, render cooperativo cancelado | exige confirmação porque bloqueia trabalho; sem scheduler ativo |
-| Enviar para revisão no TikTok | Android `ACTION_SEND`/Web Share | início de intent/chooser | **BUG:** interface dizia “TikTok recebeu” mesmo quando só abriu chooser e interpretava resolução de activity como entrega concluída |
+| INICIAR AGENTE | POST control `START` | `RUNNING` e ciclo inicial com descoberta + jobs duráveis | bloqueia novo run se já houver experimento; não há scheduler/repeat |
+| ABRIR VÍDEO PRONTO | GET `/v1/growth/creatives/{id}/video` | MP4 renderizado e hash no backend | renderiza novamente ao abrir; o artefato binário não é armazenamento durável hoje |
+| PAUSAR | POST `PAUSE` | servidor `PAUSED`, bloqueia claims e checkpoints | retomar só a fila já existente |
+| PARADA DE EMERGÊNCIA | confirmação, POST `EMERGENCY_STOP` | `STOPPED`, jobs abertos bloqueados e cancelamento cooperativo | latch sem reset implementado; sem scheduler ativo |
+| Enviar para revisão no TikTok | Android `ACTION_SEND`/Web Share | início de intent/chooser | mostra intent direcionado vs seletor aberto; nenhum dos estados confirma importação/publicação |
 | Baixar MP4 | download local | arquivo exportado | não envia nem publica |
 | Renderizar MP4 manual | POST `/v1/creator-video` com foto/texto do operador | MP4 manual local | `MANUAL`, não caminho autônomo |
 | Desconectar conta | chama desconexão de identidade | revogação local/backend | não deve ser confundido com delete de vídeos |

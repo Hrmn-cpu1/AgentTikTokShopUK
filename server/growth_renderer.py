@@ -5,6 +5,7 @@ from pathlib import Path
 import hashlib
 import json
 import math
+import re
 import shutil
 import subprocess
 import tempfile
@@ -12,6 +13,8 @@ import wave
 from collections.abc import Callable
 
 from PIL import Image, ImageDraw, ImageFont
+from .creative_style import MR_WHO_STYLE
+from .growth_quality import evaluate_quality
 
 WIDTH, HEIGHT, FPS = 540, 960, 24
 FONT = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
@@ -253,17 +256,35 @@ def render_growth_plan(plan_json: str, output_dir: str | Path | None = None,
         thumbnail = directory / "thumbnail.jpg"
         backgrounds[0].resize((WIDTH, HEIGHT), Image.Resampling.LANCZOS).save(thumbnail, "JPEG", quality=90)
         digest = hashlib.sha256(output.read_bytes()).hexdigest()
+        probe = subprocess.run(["ffprobe", "-v", "error", "-show_streams", "-of", "json", str(output)],
+            capture_output=True, text=True, timeout=15, check=True)
+        streams = json.loads(probe.stdout).get("streams", [])
+        video_stream = next(item for item in streams if item.get("codec_type") == "video")
+        audio_stream = next(item for item in streams if item.get("codec_type") == "audio")
+        av_delta = abs(float(video_stream.get("duration", duration_total)) -
+                       float(audio_stream.get("duration", duration_total)))
+        blank_scan = subprocess.run(["ffmpeg", "-nostdin", "-hide_banner", "-i", str(output),
+            "-vf", "blackdetect=d=0.6:pix_th=0.015:pic_th=0.99", "-an", "-f", "null", "-"],
+            capture_output=True, text=True, timeout=30, check=False)
+        black_intervals = re.findall(r"black_start:[0-9.]+ black_end:[0-9.]+ black_duration:([0-9.]+)", blank_scan.stderr)
+        blank_check = "FAIL" if blank_scan.returncode != 0 or any(float(item) >= 0.6 for item in black_intervals) else "PASS"
         manifest = {
-            "rendererVersion": "2.1.0", "format": "mp4", "videoCodec": "h264", "audioCodec": "aac",
+            "rendererVersion": "2.2.0", "format": "mp4", "videoCodec": "h264", "audioCodec": "aac",
             "audioDescription": "Portuguese narration plus original low-volume tone bed" if voice_path else "synthetic tone bed; narration unavailable in this runtime",
             "narrationGenerated": bool(voice_path), "narrationLanguage": "pt-BR", "width": WIDTH,
             "height": HEIGHT, "aspectRatio": "9:16", "durationSeconds": round(duration_total, 2), "fps": FPS,
             "sceneCount": len(scenes), "sceneTransitions": max(0, len(scenes) - 1), "animatedCropZoom": True,
             "captions": "short synchronized scene phrases", "captionFile": srt_path.name,
+            "captionSafeZones": True, "captionBlockCount": len(caption_blocks),
+            "hookDurationSeconds": round(scenes[0]["seconds"], 2),
             "captionsBurnedIn": True, "thumbnail": thumbnail.name, "sha256": digest,
+            "audioVideoDurationMismatchSeconds": round(av_delta, 3), "blankFrameCheck": blank_check,
             "title": str(plan.get("topic", "Original content")), "sourceEvidence": plan.get("sourceEvidence", {}),
             "assetPlan": plan.get("assetPlan", {}), "humanChosenPhotoUsed": False,
+            "purpose": plan.get("purpose", "EXPERIMENT"),
+            "creativeStyle": {"styleId": MR_WHO_STYLE["style_id"], "styleVersion": MR_WHO_STYLE["style_version"]},
         }
+        manifest["qualityGate"] = evaluate_quality(manifest, plan)
         (directory / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
         return output, digest, cleanup
     except Exception:

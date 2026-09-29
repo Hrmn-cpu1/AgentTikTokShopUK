@@ -3,6 +3,8 @@ import hmac
 import hashlib
 import json
 import os
+import threading
+import logging
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Literal
@@ -23,6 +25,7 @@ from .connection_api import add_connection_routes, utc
 from .governance import add_governance_routes, capital_check, fresh, validate_launch
 from .video_studio import render_creator_video
 from .growth_api import add_growth_routes
+from .growth_worker import run_growth_worker
 
 
 Money = Decimal
@@ -111,6 +114,24 @@ def create_app(database_url: str | None = None, operator_token: str | None = Non
     add_governance_routes(app, engine, require_operator, require_manual_authority)
     add_growth_routes(app, engine, require_operator, trend_source=trend_source)
 
+    # The DB queue is durable; this single in-process poller only executes leased jobs.
+    worker_stop = threading.Event()
+    worker_thread = None
+    if os.environ.get("GROWTH_WORKER_ENABLED") == "1":
+        @app.on_event("startup")
+        def start_growth_worker():
+            nonlocal worker_thread
+            worker_stop.clear()
+            worker_thread = threading.Thread(target=run_growth_worker, args=(engine, worker_stop),
+                name="growth-worker", daemon=True)
+            worker_thread.start()
+
+        @app.on_event("shutdown")
+        def stop_growth_worker():
+            worker_stop.set()
+            if worker_thread and worker_thread.is_alive():
+                worker_thread.join(timeout=5)
+
     @app.post('/v1/creator-video', dependencies=[Depends(require_operator)])
     async def creator_video(photo: UploadFile = File(...), headline: str = Form(...),
                             message: str = Form(...), call_to_action: str = Form(...)):
@@ -139,7 +160,7 @@ def create_app(database_url: str | None = None, operator_token: str | None = Non
             with engine.connect() as conn:
                 revision = conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
                 conn.execute(text("SELECT 1")).scalar_one()
-            if revision != "0008_growth_control":
+            if revision != "0009_growth_runtime_quality":
                 raise HTTPException(503, "Database migration required")
         except HTTPException:
             raise
