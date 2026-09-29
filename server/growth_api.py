@@ -142,6 +142,7 @@ def add_growth_routes(app, engine, require_operator, trend_source=None, media_st
                 GrowthCreative.mrwho_public.is_(True),
                 GrowthCreative.purpose == "EXPERIMENT",
                 GrowthCreative.quality_status == "QUALITY_PASS",
+                GrowthCreative.policy_status == "POLICY_PASS",
                 GrowthCreative.creative_learning_eligible.is_(True),
             ).order_by(GrowthCreative.created_at.desc()).limit(24)).all()
             items = []
@@ -241,7 +242,8 @@ def add_growth_routes(app, engine, require_operator, trend_source=None, media_st
                         truth_classification="OWNER_REPORTED", evidence_ref=item.evidence_ref,
                         observed_at=observed_at))
             can_compare, exclusion = eligible_for_comparison(
-                quality_status=creative.quality_status, purpose=creative.purpose, source=item.source,
+                quality_status=creative.quality_status, policy_status=creative.policy_status,
+                purpose=creative.purpose, source=item.source,
                 truth_classification=item.truth_classification, publication_identity=item.publication_identity,
                 evidence_ref=item.evidence_ref, views=item.views, observed_at=observed_at,
                 created_at=creative.created_at if creative.created_at.tzinfo else creative.created_at.replace(tzinfo=timezone.utc))
@@ -256,7 +258,9 @@ def add_growth_routes(app, engine, require_operator, trend_source=None, media_st
             for observation, candidate_creative, trend in rows:
                 plan = json.loads(candidate_creative.plan_json)
                 sample_ok, _ = eligible_for_comparison(
-                    quality_status=candidate_creative.quality_status, purpose=candidate_creative.purpose,
+                    quality_status=candidate_creative.quality_status,
+                    policy_status=candidate_creative.policy_status,
+                    purpose=candidate_creative.purpose,
                     source=observation.source, truth_classification=observation.truth_classification,
                     publication_identity=observation.publication_identity, evidence_ref=observation.evidence_ref,
                     views=observation.views, observed_at=observation.observed_at,
@@ -288,13 +292,12 @@ def add_growth_routes(app, engine, require_operator, trend_source=None, media_st
                 learning_result["rationale"], creative.experiment_id)
             creative.state = "OBSERVING"
             control = control_row(session)
-            if (delivery is not None and delivery.state == "HANDOFF_INITIATED"
-                    and scheduler_enabled(control) and control.mode == "ACTION_REQUIRED"):
+            if delivery is not None and delivery.state == "HANDOFF_INITIATED" and control.mode == "ACTION_REQUIRED":
                 old_control = control.mode
-                control.mode = "RUNNING"
+                control.mode = "RUNNING" if scheduler_enabled(control) else "READY"
                 control.updated_at = datetime.now(timezone.utc)
-                record_transition(session, old_control, "RUNNING",
-                    "human publication observation recorded; scheduler may evaluate next experiment",
+                record_transition(session, old_control, control.mode,
+                    "human publication observation recorded; publication remains OWNER_REPORTED",
                     creative.experiment_id)
             try:
                 session.commit()
@@ -347,7 +350,7 @@ def add_growth_routes(app, engine, require_operator, trend_source=None, media_st
                     GrowthJob.state.in_(["PENDING", "RETRY", "RUNNING"]))) or 0
                 previous = session.scalar(select(func.count(GrowthCreative.creative_id))) or 0
                 should_discover = old_mode != "RUNNING" and pending == 0 and previous == 0
-                if old_mode == "RUNNING":
+                if old_mode in {"RUNNING", "PAUSED"}:
                     control.mode = "RUNNING"
                 elif pending == 0 and previous > 0:
                     control.mode = "ACTION_REQUIRED"
