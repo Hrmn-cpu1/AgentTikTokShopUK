@@ -1,6 +1,7 @@
 """Authenticated durable API for Brazil growth experiments. No publishing side effect."""
 import json
 import os
+import threading
 from collections import Counter
 from datetime import timedelta
 from typing import Literal
@@ -18,10 +19,14 @@ from sqlalchemy.orm import Session
 from .growth_brain import TrendCandidate, build_creative_plan, canonical_plan, choose_niche, trend_score, choose_hook_family
 from .growth_models import (GrowthCreative, GrowthControl, GrowthLearning, GrowthObservation,
     FollowerSnapshot, NicheHypothesis, PublicationIntent, TrendSignal, GrowthStateTransition,
-    GrowthMediaArtifact)
+    GrowthMediaArtifact, GrowthPolicyAssessment, GrowthSchedulerTick)
 from .growth_queue_models import GrowthJob
 from .growth_worker import enqueue_job, record_transition
 from .growth_learning import eligible_for_comparison, compare_hook_families
+from .growth_cycle import (CycleBlocked, run_growth_cycle, run_growth_scheduler,
+    run_scheduler_tick)
+from .growth_runtime import quota_snapshot, scheduler_enabled
+from .delivery_gateway import record_owner_publication_report
 from .models import TikTokConnection
 from .delivery_models import DeliveryEffect
 from .trend_sources import GoogleTrendsBrazilRSS, rank_public_signal
@@ -57,6 +62,23 @@ class ObservationInput(BaseModel):
     followers_before: int | None = Field(default=None, ge=0)
     followers_after: int | None = Field(default=None, ge=0)
 
+
+class FollowerSnapshotInput(BaseModel):
+    snapshot_id: str = Field(min_length=1, max_length=100)
+    followers: int | None = Field(default=None, ge=0)
+    source: Literal["OWNER_TIKTOK_UI"] = "OWNER_TIKTOK_UI"
+    truth_classification: Literal["OWNER_REPORTED"] = "OWNER_REPORTED"
+    evidence_ref: str = Field(min_length=6, max_length=1000)
+    observed_at: datetime
+
+
+class SchedulerConfigInput(BaseModel):
+    enabled: bool
+    interval_seconds: int = Field(default=300, ge=60, le=3600)
+    daily_experiment_quota: int = Field(default=3, ge=1, le=24)
+    daily_handoff_quota: int = Field(default=3, ge=1, le=24)
+    follower_goal: int = Field(default=1000, ge=1, le=10_000_000)
+
 def add_growth_routes(app, engine, require_operator, trend_source=None, media_store=None):
     source = trend_source or GoogleTrendsBrazilRSS()
 
@@ -67,6 +89,32 @@ def add_growth_routes(app, engine, require_operator, trend_source=None, media_st
             session.add(control)
             session.flush()
         return control
+
+
+    def scheduler_label(control):
+        return "ENABLED_SAFE_HUMAN_GATE" if scheduler_enabled(control) else "DISABLED_SAFE"
+
+    scheduler_stop = threading.Event()
+    scheduler_thread = None
+
+    if os.environ.get("GROWTH_SCHEDULER_ENABLED") == "1":
+        @app.on_event("startup")
+        def start_growth_scheduler():
+            nonlocal scheduler_thread
+            scheduler_stop.clear()
+            scheduler_thread = threading.Thread(
+                target=run_growth_scheduler,
+                args=(engine, source, scheduler_stop),
+                name="growth-safe-scheduler",
+                daemon=True,
+            )
+            scheduler_thread.start()
+
+        @app.on_event("shutdown")
+        def stop_growth_scheduler():
+            scheduler_stop.set()
+            if scheduler_thread and scheduler_thread.is_alive():
+                scheduler_thread.join(timeout=5)
 
     @app.get("/v1/growth/observation-capabilities", dependencies=[Depends(require_operator)])
     def observation_capabilities():
@@ -114,6 +162,35 @@ def add_growth_routes(app, engine, require_operator, trend_source=None, media_st
     def mrwho_public_home():
         return HTMLResponse("""<!doctype html><html lang='pt-BR'><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>Mr.Who?</title><style>body{margin:0;background:#080b12;color:#f7f8fc;font:16px system-ui}main{max-width:680px;margin:auto;padding:32px 18px}h1{font-size:42px;margin:0;color:#ff1685}article{padding:16px;margin:14px 0;border:1px solid #293140;border-radius:18px;background:#101722}a{color:#62e9e7}.muted{color:#aab4c4}</style><main><p class='muted'>CONTEÚDO ORIGINAL · BRASIL</p><h1>Mr.Who?</h1><p class='muted'>Curiosidade, descoberta e ideias originais em vídeos curtos.</p><section id='feed'><p class='muted'>Carregando conteúdo público elegível…</p></section><p class='muted'>Comércio TikTok Shop: desativado.</p></main><script>fetch('/v1/public/mrwho/feed').then(r=>r.json()).then(d=>{const root=document.querySelector('#feed');root.replaceChildren();if(!d.items.length){root.textContent='Nenhum conteúdo público elegível disponível ainda.';return}for(const item of d.items){const card=document.createElement('article'),title=document.createElement('h2'),hook=document.createElement('p'),link=document.createElement('a');title.textContent=item.title;hook.textContent=item.hook;link.href=item.tiktokUrl;link.rel='noopener noreferrer';link.textContent='Assistir no TikTok';card.append(title,hook,link);root.append(card)}}).catch(()=>{document.querySelector('#feed').textContent='Feed público indisponível no momento.'})</script></html>""")
 
+    @app.post("/v1/growth/followers", dependencies=[Depends(require_operator)])
+    def record_follower_snapshot(item: FollowerSnapshotInput):
+        if item.observed_at.tzinfo is None or item.observed_at.utcoffset() is None:
+            raise HTTPException(422, "observed_at needs an explicit timezone")
+        observed_at = item.observed_at.astimezone(timezone.utc)
+        if observed_at > datetime.now(timezone.utc):
+            raise HTTPException(422, "Future follower snapshot is not accepted")
+        with Session(engine) as session:
+            existing = session.get(FollowerSnapshot, item.snapshot_id)
+            expected = (item.followers, item.source, item.truth_classification,
+                        item.evidence_ref, observed_at)
+            if existing:
+                actual_at = existing.observed_at
+                if actual_at.tzinfo is None or actual_at.utcoffset() is None:
+                    actual_at = actual_at.replace(tzinfo=timezone.utc)
+                actual = (existing.followers, existing.source, existing.truth_classification,
+                          existing.evidence_ref, actual_at.astimezone(timezone.utc))
+                if actual != expected:
+                    raise HTTPException(409, "Conflicting follower snapshot identity")
+                return {"snapshotId": existing.snapshot_id, "duplicate": True,
+                    "followers": existing.followers, "truth": existing.truth_classification}
+            session.add(FollowerSnapshot(snapshot_id=item.snapshot_id, account_id="primary",
+                followers=item.followers, source=item.source,
+                truth_classification=item.truth_classification,
+                evidence_ref=item.evidence_ref, observed_at=observed_at))
+            session.commit()
+            return {"snapshotId": item.snapshot_id, "duplicate": False,
+                "followers": item.followers, "truth": "OWNER_REPORTED"}
+
     @app.post("/v1/growth/observations", dependencies=[Depends(require_operator)])
     def record_growth_observation(item: ObservationInput):
         if item.observed_at.tzinfo is None or item.observed_at.utcoffset() is None:
@@ -149,6 +226,20 @@ def add_growth_routes(app, engine, require_operator, trend_source=None, media_st
                 truth_classification=item.truth_classification, evidence_ref=item.evidence_ref,
                 observed_at=observed_at))
             session.flush()
+            delivery = session.scalar(select(DeliveryEffect).where(
+                DeliveryEffect.creative_id == item.creative_id
+            ).order_by(DeliveryEffect.created_at.desc()).limit(1))
+            if delivery is not None:
+                record_owner_publication_report(session, delivery_id=delivery.delivery_id,
+                    publication_identity=item.publication_identity, observed_at=observed_at)
+            if item.followers_after is not None:
+                follower_id = "followers-" + item.observation_id
+                follower = session.get(FollowerSnapshot, follower_id)
+                if follower is None:
+                    session.add(FollowerSnapshot(snapshot_id=follower_id, account_id="primary",
+                        followers=item.followers_after, source=item.source,
+                        truth_classification="OWNER_REPORTED", evidence_ref=item.evidence_ref,
+                        observed_at=observed_at))
             can_compare, exclusion = eligible_for_comparison(
                 quality_status=creative.quality_status, purpose=creative.purpose, source=item.source,
                 truth_classification=item.truth_classification, publication_identity=item.publication_identity,
@@ -195,6 +286,16 @@ def add_growth_routes(app, engine, require_operator, trend_source=None, media_st
                 created_at=datetime.now(timezone.utc)))
             record_transition(session, "OBSERVED", "LEARNING_ELIGIBLE" if can_compare else "OBSERVED_BUT_NOT_LEARNING_ELIGIBLE",
                 learning_result["rationale"], creative.experiment_id)
+            creative.state = "OBSERVING"
+            control = control_row(session)
+            if (delivery is not None and delivery.state == "HANDOFF_INITIATED"
+                    and scheduler_enabled(control) and control.mode == "ACTION_REQUIRED"):
+                old_control = control.mode
+                control.mode = "RUNNING"
+                control.updated_at = datetime.now(timezone.utc)
+                record_transition(session, old_control, "RUNNING",
+                    "human publication observation recorded; scheduler may evaluate next experiment",
+                    creative.experiment_id)
             try:
                 session.commit()
             except IntegrityError:
@@ -212,7 +313,7 @@ def add_growth_routes(app, engine, require_operator, trend_source=None, media_st
             session.commit()
             return {"mode": control.mode, "updatedAt": control.updated_at.isoformat(),
                 "execution": "SERVER_WORKER" if os.environ.get("GROWTH_WORKER_ENABLED") == "1" else "SERVER_QUEUE_ONLY",
-                "scheduler": "NOT_CONFIGURED"}
+                "scheduler": scheduler_label(control)}
 
     @app.post("/v1/growth/control", dependencies=[Depends(require_operator)])
     def set_growth_control(payload: dict):
@@ -228,15 +329,15 @@ def add_growth_routes(app, engine, require_operator, trend_source=None, media_st
             if action == "START" and old_mode == "RUNNING":
                 return {"mode": control.mode, "updatedAt": control.updated_at.isoformat(),
                     "execution": "SERVER_WORKER" if os.environ.get("GROWTH_WORKER_ENABLED") == "1" else "SERVER_QUEUE_ONLY",
-                    "scheduler": "NOT_CONFIGURED", "duplicate": True, "cycle": {"state":"ALREADY_RUNNING"}}
+                    "scheduler": scheduler_label(control), "duplicate": True, "cycle": {"state":"ALREADY_RUNNING"}}
             if action == "PAUSE" and old_mode == "PAUSED":
                 return {"mode": control.mode, "updatedAt": control.updated_at.isoformat(),
                     "execution": "SERVER_WORKER" if os.environ.get("GROWTH_WORKER_ENABLED") == "1" else "SERVER_QUEUE_ONLY",
-                    "scheduler": "NOT_CONFIGURED", "duplicate": True}
+                    "scheduler": scheduler_label(control), "duplicate": True}
             if action == "EMERGENCY_STOP" and old_mode == "STOPPED":
                 return {"mode": control.mode, "updatedAt": control.updated_at.isoformat(),
                     "execution": "SERVER_WORKER" if os.environ.get("GROWTH_WORKER_ENABLED") == "1" else "SERVER_QUEUE_ONLY",
-                    "scheduler": "NOT_CONFIGURED", "duplicate": True}
+                    "scheduler": scheduler_label(control), "duplicate": True}
             if action == "START":
                 if old_mode == "STOPPED":
                     raise HTTPException(409, "Emergency Stop is latched; operator reset required")
@@ -273,7 +374,7 @@ def add_growth_routes(app, engine, require_operator, trend_source=None, media_st
             session.commit()
             response = {"mode": control.mode, "updatedAt": control.updated_at.isoformat(),
                 "execution": "SERVER_WORKER" if os.environ.get("GROWTH_WORKER_ENABLED") == "1" else "SERVER_QUEUE_ONLY",
-                "scheduler": "NOT_CONFIGURED"}
+                "scheduler": scheduler_label(control)}
         if action == "START" and should_discover:
             try:
                 response["cycle"] = run_first_experiment()
@@ -302,6 +403,8 @@ def add_growth_routes(app, engine, require_operator, trend_source=None, media_st
             followers = session.scalars(select(FollowerSnapshot).order_by(FollowerSnapshot.observed_at.desc()).limit(1)).all()
             intents = session.scalars(select(PublicationIntent).order_by(PublicationIntent.created_at.desc()).limit(50)).all()
             learnings = session.scalars(select(GrowthLearning).order_by(GrowthLearning.created_at.desc()).limit(50)).all()
+            policies = session.scalars(select(GrowthPolicyAssessment).order_by(
+                GrowthPolicyAssessment.evaluated_at.desc()).limit(100)).all()
             jobs = session.scalars(select(GrowthJob).order_by(GrowthJob.created_at.desc()).limit(20)).all()
             connection = session.scalar(select(TikTokConnection).where(TikTokConnection.operator_id == "primary"))
             total_creatives = session.scalar(select(func.count(GrowthCreative.creative_id))) or 0
@@ -330,6 +433,9 @@ def add_growth_routes(app, engine, require_operator, trend_source=None, media_st
             learning_by_creative = {}
             for item in learnings:
                 learning_by_creative.setdefault(item.creative_id, item)
+            policy_by_creative = {}
+            for item in policies:
+                policy_by_creative.setdefault(item.creative_id, item)
             experiment_items = []
             media_items = []
             for creative in creatives:
@@ -339,6 +445,7 @@ def add_growth_routes(app, engine, require_operator, trend_source=None, media_st
                 intent = intents_by_creative.get(creative.creative_id)
                 delivery = deliveries_by_creative.get(creative.creative_id)
                 learning = learning_by_creative.get(creative.creative_id)
+                policy = policy_by_creative.get(creative.creative_id)
                 metrics = json.loads(trend.metrics_json) if trend else {}
                 evidence = plan.get("sourceEvidence", {})
                 record = {"creativeId": creative.creative_id, "experimentId": creative.experiment_id,
@@ -357,6 +464,11 @@ def add_growth_routes(app, engine, require_operator, trend_source=None, media_st
                         "actionContractId": delivery.action_contract_id if delivery else None,
                         "effectId": delivery.effect_id if delivery else None},
                     "quality": {"status": creative.quality_status, "details": json.loads(creative.quality_json)},
+                    "policy": None if policy is None else {"status": policy.policy_status,
+                        "originality": policy.originality_status,
+                        "policyPackVersion": policy.policy_pack_version,
+                        "aigcClassification": policy.aigc_classification,
+                        "disclosureRequired": policy.disclosure_required},
                     "purpose": creative.purpose, "creativeLearningEligible": creative.creative_learning_eligible,
                     "styleBaselineEligible": creative.style_baseline_eligible,
                     "exclusionReason": creative.exclusion_reason,
@@ -415,16 +527,23 @@ def add_growth_routes(app, engine, require_operator, trend_source=None, media_st
                 GrowthStateTransition.transitioned_at.desc()).limit(1))
             granted = set(connection.granted_scopes.replace(",", " ").split()) if connection and connection.granted_scopes else set()
             session.commit()
+            quotas = quota_snapshot(session, control)
             return {"control": {"mode": control.mode, "updatedAt": control.updated_at.isoformat(),
                     "execution": "SERVER_WORKER" if os.environ.get("GROWTH_WORKER_ENABLED") == "1" else "SERVER_QUEUE_ONLY",
-                    "scheduler": "NOT_CONFIGURED"},
+                    "scheduler": scheduler_label(control),
+                    "schedulerEnabled": scheduler_enabled(control),
+                    "schedulerIntervalSeconds": control.scheduler_interval_seconds},
+                "quota": quotas,
                 "identity": {"status": "AVAILABLE" if connection and connection.status == "ACTIVE" else "UNKNOWN",
                     "source": "tiktok_connections.status" if connection else "No server connection record",
                     "connectedAt": connection.connected_at.isoformat() if connection else None},
-                "capabilities": {"discover": "PARTIAL", "analyze": "PARTIAL", "create": "PARTIAL",
-                    "render": "REAL", "delivery": "MANUAL", "autonomousPublish": "NOT_PROVEN",
-                    "observe": "NOT_PROVEN" if not observations_count else "PARTIAL",
-                    "learn": "NOT_PROVEN" if not learnings else "PARTIAL", "repeat": "NOT_PROVEN"},
+                "capabilities": {"discover": "REAL_PUBLIC_BR_SIGNAL", "analyze": "REAL_EVIDENCE_BOUNDED",
+                    "create": "REAL_ORIGINAL_PLAN", "render": "REAL",
+                    "originalityPolicy": "REAL_GATE", "delivery": "MANUAL_HANDOFF",
+                    "autonomousPublish": "NOT_ALLOWED",
+                    "observe": "NOT_PROVEN" if not observations_count else "OWNER_REPORTED",
+                    "learn": "NOT_PROVEN" if not learnings else "EVIDENCE_GATED",
+                    "repeat": "SAFE_SCHEDULER" if scheduler_enabled(control) else "AVAILABLE_DISABLED"},
                 "currentActivity": current_activity,
                 "currentJob": None if not current_job else {"jobId": current_job.job_id,
                     "type": current_job.job_type,
@@ -446,7 +565,8 @@ def add_growth_routes(app, engine, require_operator, trend_source=None, media_st
                     "ready": total_ready, "observations": observations_count,
                     "learningRecords": total_learnings, "pendingJobs": total_pending_jobs},
                 "followers": None if follower_snapshot is None else {"value": follower_snapshot.followers,
-                    "source": follower_snapshot.source, "observedAt": follower_snapshot.observed_at.isoformat(),
+                    "source": follower_snapshot.source, "truth": follower_snapshot.truth_classification,
+                    "observedAt": follower_snapshot.observed_at.isoformat(),
                     "evidenceRef": follower_snapshot.evidence_ref},
                 "experiments": experiment_items, "media": media_items,
                 "mediaStorage": {"provider": "RAILWAY_VOLUME", "configured": media_store is not None,
@@ -576,95 +696,56 @@ def add_growth_routes(app, engine, require_operator, trend_source=None, media_st
 
     @app.post("/v1/growth/run", dependencies=[Depends(require_operator)])
     def run_first_experiment():
-        """Discover current public BR signals, select deterministically and create one original plan."""
+        """Create one safe original BR experiment; repeat cycles require human evidence."""
+        try:
+            return run_growth_cycle(engine, source, trigger="MANUAL")
+        except CycleBlocked as exc:
+            raise HTTPException(exc.status, exc.detail) from None
+
+    @app.post("/v1/growth/scheduler/tick", dependencies=[Depends(require_operator)])
+    def scheduler_tick_now():
+        return run_scheduler_tick(engine, source)
+
+    @app.get("/v1/growth/scheduler", dependencies=[Depends(require_operator)])
+    def get_scheduler():
         with Session(engine) as session:
             control = control_row(session)
-            mode = control.mode
-            previous_creatives = session.scalar(select(func.count(GrowthCreative.creative_id))) or 0
-        if mode not in {"READY", "RUNNING"}:
-            raise HTTPException(409, f"Growth agent is {mode.lower()}")
-        if mode == "RUNNING" and previous_creatives:
-            raise HTTPException(409, "A cycle is already active or waiting for owner confirmation")
-        try:
-            candidates = source.collect()
-        except Exception as exc:
-            raise HTTPException(503, f"Trend source unavailable: {type(exc).__name__}") from None
-        now = datetime.now(timezone.utc)
-        candidates = [item for item in candidates if item.market == "BR" and
-                      item.observed_at.tzinfo is not None and
-                      0 <= (now - item.observed_at.astimezone(timezone.utc)).total_seconds() <= 48 * 3600]
-        if not candidates:
-            raise HTTPException(503, "No fresh public Brazil trend signals")
-        ranked = sorted(((rank_public_signal(item, now), item) for item in candidates),
-                        key=lambda row: (-row[0]["score"], -row[1].observed_at.timestamp(), row[1].trend_id))
-        ranking = [{"trendId": item.trend_id, "topic": item.topic, **score} for score, item in ranked[:20]]
-        chosen_score, chosen = ranked[0]
-        metrics = dict(chosen.metrics)
-        metrics["ranking"] = chosen_score
+            snapshot = quota_snapshot(session, control)
+            last_tick = session.scalar(select(GrowthSchedulerTick).order_by(
+                GrowthSchedulerTick.observed_at.desc()).limit(1))
+            session.commit()
+            return {"enabled": scheduler_enabled(control), "mode": scheduler_label(control),
+                "intervalSeconds": control.scheduler_interval_seconds,
+                "dailyExperimentQuota": control.daily_experiment_quota,
+                "dailyHandoffQuota": control.daily_handoff_quota,
+                "followerGoal": control.follower_goal,
+                "quota": snapshot,
+                "lastTick": None if last_tick is None else {
+                    "decision": last_tick.decision, "reason": last_tick.reason,
+                    "creativeId": last_tick.creative_id,
+                    "observedAt": last_tick.observed_at.isoformat()},
+                "publicationBoundary": "HUMAN_REQUIRED"}
+
+    @app.post("/v1/growth/scheduler", dependencies=[Depends(require_operator)])
+    def configure_scheduler(item: SchedulerConfigInput):
         with Session(engine) as session:
-            if control_row(session).mode not in {"READY", "RUNNING"}:
-                session.rollback()
-                raise HTTPException(409, "Growth agent was stopped before the experiment could be saved")
-            trend = session.get(TrendSignal, chosen.trend_id)
-            if trend is None:
-                trend = TrendSignal(trend_id=chosen.trend_id, source=chosen.source, source_ref=chosen.source_ref,
-                    topic=chosen.topic[:300], market="BR", language=chosen.language,
-                    metrics_json=json.dumps(metrics, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
-                    evidence=chosen.evidence, observed_at=chosen.observed_at.astimezone(timezone.utc))
-                session.add(trend)
-                session.flush()
-            creative_id = "creative-" + chosen.trend_id
-            experiment_id = "experiment-" + chosen.trend_id
-            creative = session.get(GrowthCreative, creative_id)
-            duplicate = creative is not None
-            if creative is None:
-                niche_name = choose_niche(TrendCandidate(topic=chosen.topic, source=chosen.source,
-                    source_ref=chosen.source_ref, evidence=chosen.evidence, metrics=metrics), {})
-                niche_id = "niche-" + niche_name
-                niche = session.get(NicheHypothesis, niche_id)
-                if niche is None:
-                    niche = NicheHypothesis(niche_id=niche_id, market="BR", language="pt-BR",
-                        hypothesis=f"Testar hook e checklist original sobre sinal público de busca: {chosen.topic[:180]}",
-                        trend_evidence=chosen.source_ref, production_cost_centavos=0, risk="LOW",
-                        status="EXPLORING", created_at=now)
-                    session.add(niche)
-                candidate = TrendCandidate(topic=chosen.topic, source=chosen.source, source_ref=chosen.source_ref,
-                    evidence=chosen.evidence, metrics=metrics)
-                previous_creatives = session.scalars(select(GrowthCreative).join(TrendSignal,
-                    GrowthCreative.trend_id == TrendSignal.trend_id).where(
-                        func.lower(TrendSignal.topic) == chosen.topic.casefold())).all()
-                previous_hook_counts = Counter()
-                for previous in previous_creatives:
-                    previous_hook_counts[json.loads(previous.plan_json).get("hookFamily", "question")] += 1
-                hook_family = choose_hook_family(candidate, dict(previous_hook_counts))
-                plan = build_creative_plan(candidate, niche_name, hook_family)
-                plan["sourceEvidence"].update({"geography": chosen.geography,
-                    "collectedAt": chosen.collected_at.isoformat(), "observedAt": chosen.observed_at.isoformat(),
-                    "rankingComponents": chosen_score["components"], "rankingScore": chosen_score["score"],
-                    "selectionReason": "highest reproducible fresh BR public-search score; TikTok engagement is UNKNOWN",
-                    "hookFamily": hook_family, "hookSelection": "least-used style family for this topic; deterministic exploration"})
-                creative = GrowthCreative(creative_id=creative_id, niche_id=niche_id, trend_id=chosen.trend_id,
-                    experiment_id=experiment_id, plan_json=canonical_plan(plan), evidence_ref=chosen.source_ref,
-                    state="SCRIPTED", purpose="EXPERIMENT", creative_learning_eligible=False,
-                    style_baseline_eligible=False,
-                    exclusion_reason="AWAITING_QUALITY_PUBLICATION_AND_OBSERVATION",
-                    quality_status="NOT_EVALUATED", quality_json="{}", created_at=now)
-                session.add(creative)
-                session.commit()
-            if creative.state == "SCRIPTED":
-                job = enqueue_job(session, creative.creative_id, "PREPARE_ASSETS")
-                record_transition(session, "SCRIPTED", "QUEUED", "idempotent render job enqueued",
-                                  creative.experiment_id, job.job_id)
-                session.commit()
-            plan = json.loads(creative.plan_json)
-            return {"state": creative.state, "duplicate": duplicate, "creativeId": creative.creative_id,
-                "experimentId": creative.experiment_id, "source": chosen.source,
-                "market": "BR", "geography": chosen.geography, "languageSignal": chosen.language,
-                "ranking": ranking, "selected": {"trendId": chosen.trend_id, "topic": chosen.topic,
-                    "score": chosen_score["score"], "components": chosen_score["components"]},
-                "plan": plan, "jobState": "PENDING" if creative.state == "SCRIPTED" else creative.state,
-                "videoUrl": f"/v1/growth/creatives/{creative.creative_id}/video",
-                "delivery": {"status": "NOT_SENT", "reason": "TikTok Content Posting scope video.upload is not currently granted"}}
+            control = session.scalar(select(GrowthControl).where(
+                GrowthControl.control_id == "default").with_for_update())
+            if control is None:
+                control = control_row(session)
+            control.scheduler_enabled = item.enabled
+            control.scheduler_interval_seconds = item.interval_seconds
+            control.daily_experiment_quota = item.daily_experiment_quota
+            control.daily_handoff_quota = item.daily_handoff_quota
+            control.follower_goal = item.follower_goal
+            control.updated_at = datetime.now(timezone.utc)
+            session.commit()
+            return {"enabled": scheduler_enabled(control), "mode": scheduler_label(control),
+                "intervalSeconds": control.scheduler_interval_seconds,
+                "dailyExperimentQuota": control.daily_experiment_quota,
+                "dailyHandoffQuota": control.daily_handoff_quota,
+                "followerGoal": control.follower_goal,
+                "publicationBoundary": "HUMAN_REQUIRED"}
 
     @app.get("/v1/growth/creatives/{creative_id}/video", dependencies=[Depends(require_operator)])
     def render_experiment_video(creative_id: str):
