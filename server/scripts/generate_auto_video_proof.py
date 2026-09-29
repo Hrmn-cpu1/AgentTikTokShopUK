@@ -88,7 +88,7 @@ def main():
         "sha256": digest,
         "quality": manifest["qualityGate"]["status"],
         "tts": manifest["tts"],
-        "topic": chosen.topic,
+        "topic": candidate.topic,
         "creativeDNA": dna["evidenceDigest"],
     }, ensure_ascii=False))
 
