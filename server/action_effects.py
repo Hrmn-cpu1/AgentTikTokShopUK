@@ -61,6 +61,10 @@ def _digest(value) -> str:
     return hashlib.sha256(_canonical(value).encode("utf-8")).hexdigest()
 
 
+def _valid_sha256(value: str) -> bool:
+    return isinstance(value, str) and len(value) == 64 and all(c in "0123456789abcdef" for c in value.lower())
+
+
 def _reject_secret_fields(value, path="parameters"):
     if isinstance(value, dict):
         for key, child in value.items():
@@ -97,26 +101,28 @@ def create_action_intent(session: Session, *, identity: LeaseIdentity, idempoten
                          business_parameters: dict, target_account_id: str | None = None,
                          requested_at: datetime | None = None, media_store=None,
                          fault_after: str | None = None) -> ActionIntentIdentity:
-    """Atomically persist a safe LOCAL_TEST contract + ledger row + outbox intent.
+    """Atomically persist a restricted internal test contract + ledger + outbox.
 
-    The selected local test sink never performs a network call. Production action types
-    are deliberately denied until Provider Lab installs a separately reviewed adapter.
+    The Provider Lab pair is only an internal deterministic simulator; it is not a
+    production adapter and cannot call TikTok. All real provider/action pairs remain denied.
     The caller owns and commits/rolls back the transaction.
     """
-    if action_type != "LOCAL_TEST" or provider != "INTERNAL_TEST_STUB":
-        raise ValueError("this phase only admits LOCAL_TEST / INTERNAL_TEST_STUB actions")
+    safe_pairs = {
+        ("LOCAL_TEST", "INTERNAL_TEST_STUB", "internal.test"),
+        ("PROVIDER_LAB_TEST", "PROVIDER_LAB", "provider.lab.test"),
+    }
+    if (action_type, provider, required_capability) not in safe_pairs:
+        raise ValueError("only admits LOCAL_TEST or PROVIDER_LAB_TEST with its internal provider/capability")
     if not idempotency_key or len(idempotency_key) > 180:
         raise ValueError("idempotency_key must be 1..180 characters")
     if market not in {"BR", "UK", "US", "DE", "FR", "ES", "JP", "KR", "CN", "IN", "ID", "VN", "TH", "SG", "RU"}:
         raise ValueError("unsupported market")
-    if required_capability != "internal.test":
-        raise ValueError("LOCAL_TEST requires the internal.test capability")
     if not isinstance(business_parameters, dict):
         raise ValueError("business_parameters must be a JSON object")
     _reject_secret_fields(business_parameters)
     if set(business_parameters) - _LOCAL_TEST_FIELDS or any(
             not isinstance(value, str) or len(value) > 160 for value in business_parameters.values()):
-        raise ValueError("LOCAL_TEST business_parameters are limited to short purpose/case/scenario labels")
+        raise ValueError("internal test business_parameters are limited to short purpose/case/scenario labels")
     params_canonical = _canonical(business_parameters)
     params_digest = hashlib.sha256(params_canonical.encode("utf-8")).hexdigest()
 
@@ -302,6 +308,10 @@ def acknowledge_outbox(session: Session, identity: OutboxLeaseIdentity) -> bool:
     attempt.finished_at = now
     if attempt.result_class == "OUTCOME_UNKNOWN":
         attempt.stage = "INTERNAL_ACK_AFTER_UNKNOWN"
+    elif attempt.result_class.startswith("PROVIDER_") or attempt.result_class == "FAILED_BEFORE_EFFECT":
+        # An internal outbox ACK records completion of the work item only. Preserve
+        # the provider result class; it is not evidence that the effect was confirmed.
+        attempt.stage = "INTERNAL_ACK_AFTER_PROVIDER_RESULT"
     else:
         attempt.stage = "INTERNAL_TEST_SINK_ACK"
         attempt.result_class = "INTERNAL_ACK_ONLY"
@@ -343,6 +353,150 @@ def mark_effect_unknown_before_provider_io(session: Session, identity: OutboxLea
     session.flush()
 
 
+def _require_outbox_lease(session: Session, identity: OutboxLeaseIdentity):
+    """Return the effect, outbox and attempt only while this fence is current."""
+    if not renew_outbox_lease(session, identity):
+        raise LeaseLostError(f"no current outbox lease for {identity.outbox_id}")
+    effect = session.scalar(select(EffectLedger).where(
+        EffectLedger.effect_id == identity.effect_id).with_for_update())
+    outbox = session.scalar(select(EffectOutbox).where(
+        EffectOutbox.outbox_id == identity.outbox_id).with_for_update())
+    attempt = session.get(EffectAttempt, identity.attempt_id)
+    if (effect is None or outbox is None or outbox.effect_id != identity.effect_id or
+            outbox.state != "CLAIMED" or outbox.lease_owner != identity.owner or
+            outbox.lease_generation != identity.generation or
+            outbox.lease_attempt_id != identity.attempt_id or
+            attempt is None or attempt.effect_id != identity.effect_id or
+            attempt.outbox_id != identity.outbox_id or attempt.outbox_worker_id != identity.owner or
+            attempt.outbox_lease_generation != identity.generation or
+            attempt.outbox_attempt_id != identity.attempt_id):
+        raise LeaseLostError("outbox lease identity does not authorize this provider result")
+    return effect, outbox, attempt
+
+
+def persist_provider_acknowledgement(session: Session, identity: OutboxLeaseIdentity, *,
+                                     provider_reference: str | None,
+                                     response_digest: str) -> None:
+    """Persist provider ACK as an observation; leave effect UNKNOWN until reconciliation."""
+    effect, _outbox, attempt = _require_outbox_lease(session, identity)
+    if effect.state not in {"UNKNOWN", "RECONCILIATION_REQUIRED"} or not effect.reconciliation_required:
+        raise ReconciliationRequired("provider ACK is only valid after the external boundary was frozen UNKNOWN")
+    if provider_reference is not None and (not provider_reference or len(provider_reference) > 300):
+        raise ValueError("invalid provider reference")
+    if not _valid_sha256(response_digest):
+        raise ValueError("provider response digest must be SHA-256")
+    effect.provider_reference = provider_reference
+    effect.updated_at = utcnow()
+    attempt.stage = "PROVIDER_ACKNOWLEDGED"
+    attempt.result_class = "PROVIDER_ACKNOWLEDGED"
+    attempt.provider_request_id = provider_reference
+    attempt.provider_response_digest = response_digest
+    if not acknowledge_outbox(session, identity):
+        raise LeaseLostError("provider ACK could not acknowledge the current outbox lease")
+
+
+def persist_ambiguous_provider_outcome(session: Session, identity: OutboxLeaseIdentity, *,
+                                       error_class: str, response_digest: str | None = None) -> None:
+    """Finish internal dispatch after uncertainty without retrying the external effect."""
+    effect, _outbox, attempt = _require_outbox_lease(session, identity)
+    if effect.state not in {"UNKNOWN", "RECONCILIATION_REQUIRED"} or not effect.reconciliation_required:
+        raise ReconciliationRequired("ambiguous result has no committed UNKNOWN boundary")
+    attempt.stage = "PROVIDER_OUTCOME_UNKNOWN"
+    attempt.result_class = "OUTCOME_UNKNOWN"
+    attempt.error_class = error_class[:100]
+    if response_digest is not None:
+        if not _valid_sha256(response_digest):
+            raise ValueError("provider response digest must be SHA-256")
+        attempt.provider_response_digest = response_digest
+    effect.updated_at = utcnow()
+    if not acknowledge_outbox(session, identity):
+        raise LeaseLostError("ambiguous provider result could not acknowledge the current outbox lease")
+
+
+def persist_safe_provider_no_effect(session: Session, identity: OutboxLeaseIdentity, *,
+                                    result_class: str, proof_digest: str,
+                                    retry_after: timedelta | None = None,
+                                    failure_state: str = "FAILED_BEFORE_EFFECT") -> str:
+    """Record positive no-effect evidence; optionally reschedule the same identity."""
+    effect, outbox, attempt = _require_outbox_lease(session, identity)
+    if effect.state not in {"UNKNOWN", "RECONCILIATION_REQUIRED"} or not effect.reconciliation_required:
+        raise ReconciliationRequired("safe no-effect result requires a committed external boundary")
+    if not _valid_sha256(proof_digest):
+        raise ValueError("no-effect proof digest must be SHA-256")
+    if failure_state not in {"FAILED_BEFORE_EFFECT", "REJECTED"}:
+        raise ValueError("unsupported safe provider failure state")
+    now = utcnow()
+    if retry_after is not None and retry_after.total_seconds() < 0:
+        raise ValueError("retry delay cannot be negative")
+    record_effect_evidence(session, effect_id=effect.effect_id,
+        evidence_type="PROVIDER_NO_EFFECT_PROOF", source=effect.provider,
+        source_reference="provider-lab://safe-no-effect", observed_at=now,
+        payload={"effectId": effect.effect_id, "requestDigest": effect.request_digest,
+            "artifactSha256": effect.artifact_sha256, "resultClass": result_class,
+            "accepted": False, "proofDigest": proof_digest},
+        classification="PROVIDER_OBSERVED")
+    attempt.stage = "PROVIDER_PROVED_NO_EFFECT"
+    attempt.result_class = result_class[:60]
+    attempt.provider_response_digest = proof_digest
+    attempt.finished_at = now
+    effect.failure_class = result_class[:100]
+    effect.updated_at = now
+    if retry_after is not None:
+        # Retry the same contract/effect/outbox only because the provider proved
+        # this attempt had no external effect. Never mint a new effect identity.
+        effect.state = "PREPARED"
+        effect.reconciliation_required = False
+        outbox.state = "PENDING"
+        outbox.available_at = now + retry_after
+        outbox.claimed_at = None
+        outbox.heartbeat_at = None
+        outbox.lease_owner = None
+        outbox.lease_until = None
+        outbox.lease_attempt_id = None
+        outbox.last_error = result_class[:200]
+        outbox.revision += 1
+        session.flush()
+        return effect.state
+    effect.state = failure_state
+    effect.reconciliation_required = False
+    if not acknowledge_outbox(session, identity):
+        raise LeaseLostError("safe provider failure could not acknowledge the current outbox lease")
+    return effect.state
+
+
+def recover_unknown_outbox_ack(session: Session, outbox_id: str) -> bool:
+    """ACK a crashed dispatch work item after UNKNOWN was durably written.
+
+    This is internal queue recovery only. It never changes effect truth or dispatches.
+    """
+    clock = _current_db_clock(session)
+    outbox = session.scalar(select(EffectOutbox).where(
+        EffectOutbox.outbox_id == outbox_id).with_for_update())
+    if outbox is None or outbox.state != "CLAIMED" or outbox.lease_until is None:
+        return False
+    effect = session.scalar(select(EffectLedger).where(
+        EffectLedger.effect_id == outbox.effect_id).with_for_update())
+    if effect is None or effect.state not in {"UNKNOWN", "RECONCILIATION_REQUIRED"} or not effect.reconciliation_required:
+        return False
+    result = session.execute(update(EffectOutbox).where(
+        EffectOutbox.outbox_id == outbox_id, EffectOutbox.state == "CLAIMED",
+        EffectOutbox.lease_generation == outbox.lease_generation,
+        EffectOutbox.lease_attempt_id == outbox.lease_attempt_id,
+        EffectOutbox.lease_until <= clock,
+        EffectOutbox.effect_id == effect.effect_id,
+    ).values(state="ACKED", acked_at=utcnow(), lease_owner=None, lease_until=None,
+             revision=EffectOutbox.revision + 1), execution_options={"synchronize_session": False})
+    if result.rowcount != 1:
+        return False
+    attempt = session.get(EffectAttempt, outbox.lease_attempt_id)
+    if attempt is not None and attempt.effect_id == effect.effect_id:
+        attempt.stage = "INTERNAL_ACK_RECOVERED_UNKNOWN"
+        attempt.result_class = "OUTCOME_UNKNOWN"
+        attempt.finished_at = utcnow()
+    session.flush()
+    return True
+
+
 def request_effect_retry(session: Session, effect_id: str) -> str:
     """Never create a fresh identity/outbox after ambiguity; require reconciliation."""
     effect = session.scalar(select(EffectLedger).where(EffectLedger.effect_id == effect_id).with_for_update())
@@ -380,3 +534,16 @@ def record_effect_evidence(session: Session, *, effect_id: str, evidence_type: s
     session.flush()
     # No state promotion: evidence must be separately evaluated by reconciliation.
     return evidence
+
+
+def record_fenced_provider_evidence(session: Session, identity: OutboxLeaseIdentity, *,
+                                   evidence_type: str, source: str, source_reference: str,
+                                   observed_at: datetime, payload: dict,
+                                   classification: str = "PROVIDER_OBSERVED") -> EffectEvidence:
+    """Write provider-side attempt evidence only under the current dispatch fence."""
+    effect, _outbox, _attempt = _require_outbox_lease(session, identity)
+    if effect.state not in {"UNKNOWN", "RECONCILIATION_REQUIRED"} or not effect.reconciliation_required:
+        raise ReconciliationRequired("provider evidence requires a committed uncertain effect boundary")
+    return record_effect_evidence(session, effect_id=identity.effect_id,
+        evidence_type=evidence_type, source=source, source_reference=source_reference,
+        observed_at=observed_at, payload=payload, classification=classification)

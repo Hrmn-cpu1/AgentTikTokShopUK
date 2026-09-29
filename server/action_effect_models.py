@@ -61,17 +61,22 @@ class EffectLedger(Base):
     current_attempt: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     provider_reference: Mapped[str | None] = mapped_column(String(300))
     reconciliation_required: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    confirmation_evidence_id: Mapped[str | None] = mapped_column(String(36))
     confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     failure_class: Mapped[str | None] = mapped_column(String(100))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     __table_args__ = (
         UniqueConstraint("effect_id", "action_contract_id", name="uq_effect_contract_pair"),
+        ForeignKeyConstraint(["confirmation_evidence_id", "effect_id"],
+            ["effect_evidence.evidence_id", "effect_evidence.effect_id"],
+            name="fk_effect_confirmation_evidence", use_alter=True),
         CheckConstraint("state IN ('PREPARED','DISPATCH_PENDING','UNKNOWN','RECONCILIATION_REQUIRED','CONFIRMED','REJECTED','FAILED_BEFORE_EFFECT')", name="effect_state"),
         CheckConstraint("length(request_digest) = 64 AND length(artifact_sha256) = 64", name="effect_digest_length"),
         CheckConstraint("current_attempt >= 0", name="effect_attempt_nonnegative"),
         CheckConstraint("state NOT IN ('UNKNOWN','RECONCILIATION_REQUIRED') OR reconciliation_required = TRUE", name="effect_unknown_requires_reconciliation"),
         CheckConstraint("state != 'CONFIRMED' OR confirmed_at IS NOT NULL", name="effect_confirmation_timestamp"),
+        CheckConstraint("state != 'CONFIRMED' OR confirmation_evidence_id IS NOT NULL", name="effect_confirmation_evidence"),
         Index("ix_effect_reconciliation", "reconciliation_required", "updated_at"),
     )
 
@@ -158,6 +163,7 @@ class EffectEvidence(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     __table_args__ = (
         UniqueConstraint("effect_id", "evidence_type", "payload_digest", name="uq_effect_evidence_digest"),
+        UniqueConstraint("evidence_id", "effect_id", name="uq_effect_evidence_id_effect_pair"),
         CheckConstraint("classification IN ('SYSTEM_OBSERVED','PROVIDER_OBSERVED','OWNER_REPORTED','RECONCILIATION_RESULT')", name="effect_evidence_classification"),
         CheckConstraint("length(payload_digest) = 64", name="effect_evidence_digest_length"),
         Index("ix_effect_evidence_effect_observed", "effect_id", "observed_at"),

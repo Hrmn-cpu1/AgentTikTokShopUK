@@ -316,6 +316,8 @@ def test_postgres_action_effect_outbox_atomicity_idempotency_and_fencing(tmp_pat
 
         # A fresh SQLAlchemy engine is a process/restart boundary: committed intent and ACK survive.
         engine.dispose()
+
+
         restarted = create_engine(POSTGRES_URL)
         with Session(restarted) as session:
             assert session.get(ActionContract, intents[0].action_contract_id) is not None
@@ -362,3 +364,155 @@ def test_postgres_action_effect_outbox_atomicity_idempotency_and_fencing(tmp_pat
                 cleanup.delete(control)
             cleanup.commit()
         engine.dispose()
+
+@pytest.mark.skipif(not POSTGRES_URL.startswith("postgresql+psycopg://"), reason="PostgreSQL URL not configured")
+def test_postgres_provider_lab_lost_response_restart_atomic_reconciliation_and_stale_fence(tmp_path):
+    """Real PostgreSQL proves UNKNOWN/evidence durability and atomic confirmation."""
+    import hashlib
+
+    from sqlalchemy import delete, func, select, update
+    from server.action_effect_models import ActionContract, EffectAttempt, EffectEvidence, EffectLedger, EffectOutbox
+    from server.action_effects import (claim_outbox, create_action_intent,
+        record_fenced_provider_evidence)
+    from server.growth_worker import LeaseIdentity, _capture_lease
+    from server.media_storage import RailwayVolumeMediaStore, artifact_object_key
+    from server.provider_lab import (DeterministicProviderLab, ObservationScenario,
+        SendScenario, SimulatedProcessCrash, dispatch_provider_lab, reconcile_provider_lab)
+
+    engine = create_engine(POSTGRES_URL, pool_size=5)
+    suffix = uuid4().hex[:12]
+    now = utcnow()
+    niche_id, trend_id = f"n-plab-{suffix}", f"t-plab-{suffix}"
+    creative_id, job_id, artifact_id = f"c-plab-{suffix}", f"j-plab-{suffix}", str(uuid4())
+    experiment_id, job_attempt_id = f"e-plab-{suffix}", str(uuid4())
+    worker_id = f"provider-lab-job-{suffix}"
+    payload = b"postgres provider lab stable media fixture" * 100
+    sha256 = hashlib.sha256(payload).hexdigest()
+    store = RailwayVolumeMediaStore(tmp_path / "provider-lab-volume", max_artifact_bytes=1024 * 1024,
+                                    max_total_bytes=4 * 1024 * 1024)
+    store.preflight()
+    object_key = artifact_object_key(creative_id, sha256)
+    object_path = store.object_path(object_key)
+    object_path.parent.mkdir(parents=True, exist_ok=True)
+    object_path.write_bytes(payload)
+    idempotency_key = f"provider-lab:{suffix}"
+
+    with Session(engine) as session:
+        session.add(NicheHypothesis(niche_id=niche_id, market="BR", language="pt-BR",
+            hypothesis="PostgreSQL Provider Lab", trend_evidence=f"ci:plab:{suffix}",
+            production_cost_centavos=0, risk="LOW", status="EXPLORING", created_at=now))
+        session.add(TrendSignal(trend_id=trend_id, source="CI", source_ref=f"ci://plab/{suffix}",
+            topic="provider lab", market="BR", language="pt-BR", metrics_json="{}",
+            evidence="CI-only deterministic provider lab", observed_at=now))
+        session.flush()
+        session.add(GrowthCreative(creative_id=creative_id, niche_id=niche_id, trend_id=trend_id,
+            experiment_id=experiment_id, plan_json="{}", evidence_ref=f"ci://plab/{suffix}",
+            state="READY", media_ref=object_key, media_hash=sha256, quality_status="QUALITY_PASS",
+            quality_json='{"status":"QUALITY_PASS"}', created_at=now))
+        session.flush()
+        session.add(GrowthJob(job_id=job_id, creative_id=creative_id, job_type="PREPARE_ASSETS",
+            idempotency_key=f"plab-job:{suffix}", state="RUNNING", attempts=1, available_at=now,
+            lease_owner=worker_id, lease_until=now + timedelta(minutes=2), lease_acquired_at=now,
+            heartbeat_at=now, lease_generation=1, lease_attempt_id=job_attempt_id,
+            revision=1, created_at=now, updated_at=now))
+        session.flush()
+        session.add(GrowthMediaArtifact(artifact_id=artifact_id, creative_id=creative_id,
+            experiment_id=experiment_id, render_job_id=job_id, source_render_attempt="try-1-plab",
+            storage_provider="RAILWAY_VOLUME", object_key=object_key, staging_key=f".staging/plab/{suffix}",
+            content_type="video/mp4", size_bytes=len(payload), sha256=sha256, duration_ms=1000,
+            width=540, height=960, codec="h264_aac", quality_status="QUALITY_PASS",
+            quality_manifest='{"qualityGate":{"status":"QUALITY_PASS"}}', storage_state="STORED_VERIFIED",
+            created_at=now, stored_at=now, verified_at=now))
+        session.commit()
+
+    action = None
+    lab = DeterministicProviderLab()
+    try:
+        original_job_lease = LeaseIdentity(job_id, worker_id, 1, job_attempt_id)
+        with Session(engine) as session:
+            action = create_action_intent(session, identity=original_job_lease,
+                idempotency_key=idempotency_key, action_type="PROVIDER_LAB_TEST", market="BR",
+                experiment_id=experiment_id, creative_id=creative_id, artifact_id=artifact_id,
+                required_capability="provider.lab.test", provider="PROVIDER_LAB",
+                business_parameters={"case": "postgres lost response"}, media_store=store)
+            duplicate = create_action_intent(session, identity=original_job_lease,
+                idempotency_key=idempotency_key, action_type="PROVIDER_LAB_TEST", market="BR",
+                experiment_id=experiment_id, creative_id=creative_id, artifact_id=artifact_id,
+                required_capability="provider.lab.test", provider="PROVIDER_LAB",
+                business_parameters={"case": "postgres lost response"}, media_store=store)
+            assert duplicate.duplicate
+            assert (duplicate.effect_id, duplicate.outbox_id) == (action.effect_id, action.outbox_id)
+            session.commit()
+            lease = claim_outbox(session, f"plab-dispatch-{suffix}")
+            assert lease and lease.effect_id == action.effect_id
+            session.commit()
+            result = dispatch_provider_lab(session, lease, lab, SendScenario.TIMEOUT_AFTER_ACCEPT)
+            assert result and result.ambiguous and result.accepted
+            assert len(lab.records) == 1
+            session.commit()
+
+        # Engine replacement is a PostgreSQL process/restart boundary.
+        engine.dispose()
+        engine = create_engine(POSTGRES_URL, pool_size=5)
+        with Session(engine) as session:
+            effect = session.get(EffectLedger, action.effect_id)
+            outbox = session.get(EffectOutbox, action.outbox_id)
+            assert effect.state == "UNKNOWN" and effect.reconciliation_required
+            assert outbox.state == "ACKED"
+            assert session.scalar(select(func.count(EffectAttempt.attempt_id)).where(
+                EffectAttempt.effect_id == action.effect_id)) == 1
+            assert session.scalar(select(func.count(ActionContract.action_contract_id)).where(
+                ActionContract.idempotency_key == idempotency_key)) == 1
+            assert claim_outbox(session, f"plab-blind-retry-{suffix}") is None
+            session.rollback()
+
+        # Evidence insert then injected crash is rolled back to UNKNOWN in PG.
+        with Session(engine) as session:
+            with pytest.raises(SimulatedProcessCrash):
+                reconcile_provider_lab(session, action.effect_id, lab, ObservationScenario.ONE_MATCH,
+                                       fault_after_evidence=True)
+            session.commit()
+            effect = session.get(EffectLedger, action.effect_id)
+            assert effect.state == "UNKNOWN" and effect.confirmation_evidence_id is None
+            assert session.scalar(select(func.count(EffectEvidence.evidence_id)).where(
+                EffectEvidence.effect_id == action.effect_id)) == 0
+            assert reconcile_provider_lab(session, action.effect_id, lab, ObservationScenario.ONE_MATCH) == "CONFIRMED"
+            session.commit()
+            effect = session.get(EffectLedger, action.effect_id)
+            assert effect.state == "CONFIRMED" and effect.confirmation_evidence_id
+            evidence = session.get(EffectEvidence, effect.confirmation_evidence_id)
+            assert evidence and evidence.effect_id == action.effect_id
+            assert evidence.classification == "RECONCILIATION_RESULT"
+            assert len(lab.records) == 1
+            with pytest.raises(LeaseLostError):
+                record_fenced_provider_evidence(session, lease,
+                    evidence_type="STALE_ZOMBIE_EVIDENCE", source="PROVIDER_LAB",
+                    source_reference="plab://stale", observed_at=utcnow(),
+                    payload={"effectId": action.effect_id})
+            session.rollback()
+
+        # Confirmation and its evidence reference survive another connection/process restart.
+        engine.dispose()
+        engine = create_engine(POSTGRES_URL)
+        with Session(engine) as session:
+            effect = session.get(EffectLedger, action.effect_id)
+            assert effect.state == "CONFIRMED"
+            assert session.get(EffectEvidence, effect.confirmation_evidence_id) is not None
+            assert len(lab.records) == 1
+    finally:
+        engine.dispose()
+        with Session(create_engine(POSTGRES_URL)) as cleanup:
+            if action is not None:
+                cleanup.execute(update(EffectLedger).where(EffectLedger.effect_id == action.effect_id)
+                    .values(confirmation_evidence_id=None))
+                cleanup.execute(delete(EffectEvidence).where(EffectEvidence.effect_id == action.effect_id))
+                cleanup.execute(delete(EffectAttempt).where(EffectAttempt.effect_id == action.effect_id))
+                cleanup.execute(delete(EffectOutbox).where(EffectOutbox.outbox_id == action.outbox_id))
+                cleanup.execute(delete(EffectLedger).where(EffectLedger.effect_id == action.effect_id))
+                cleanup.execute(delete(ActionContract).where(ActionContract.action_contract_id == action.action_contract_id))
+            cleanup.execute(delete(GrowthMediaArtifact).where(GrowthMediaArtifact.artifact_id == artifact_id))
+            cleanup.execute(delete(GrowthJob).where(GrowthJob.job_id == job_id))
+            cleanup.execute(delete(GrowthCreative).where(GrowthCreative.creative_id == creative_id))
+            cleanup.execute(delete(TrendSignal).where(TrendSignal.trend_id == trend_id))
+            cleanup.execute(delete(NicheHypothesis).where(NicheHypothesis.niche_id == niche_id))
+            cleanup.commit()
