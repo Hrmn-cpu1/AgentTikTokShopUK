@@ -504,7 +504,8 @@ def test_postgres_provider_lab_lost_response_restart_atomic_reconciliation_and_s
         with Session(create_engine(POSTGRES_URL)) as cleanup:
             if action is not None:
                 cleanup.execute(update(EffectLedger).where(EffectLedger.effect_id == action.effect_id)
-                    .values(confirmation_evidence_id=None))
+                    .values(state="UNKNOWN", reconciliation_required=True,
+                            confirmation_evidence_id=None))
                 cleanup.execute(delete(EffectEvidence).where(EffectEvidence.effect_id == action.effect_id))
                 cleanup.execute(delete(EffectAttempt).where(EffectAttempt.effect_id == action.effect_id))
                 cleanup.execute(delete(EffectOutbox).where(EffectOutbox.outbox_id == action.outbox_id))
