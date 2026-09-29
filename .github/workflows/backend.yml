@@ -38,3 +38,12 @@ jobs:
       - run: alembic upgrade head
       - run: alembic check
       - run: python -m pytest -q server/tests
+      - name: Generate zero-input automatic video proof
+        run: python -m server.scripts.generate_auto_video_proof --output-dir auto-video-proof
+      - name: Upload automatic video proof
+        uses: actions/upload-artifact@v4
+        with:
+          name: agenttiktok-auto-video-proof
+          path: auto-video-proof/
+          retention-days: 14
+          if-no-files-found: error
