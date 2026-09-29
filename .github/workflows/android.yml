@@ -40,6 +40,19 @@ jobs:
             exit 1
           fi
       - run: npx cap sync android
+      - name: Verify confined Android share surface
+        run: |
+          grep -Fq '<cache-path name="tiktok_share_cache" path="share/" />' android/app/src/main/res/xml/file_paths.xml
+          if grep -Eq '<external-path|<cache-path[^>]*path="\."' android/app/src/main/res/xml/file_paths.xml; then
+            echo 'FileProvider exposes a broad path' >&2
+            exit 1
+          fi
+          grep -Fq 'new File(getContext().getCacheDir(), "share")' android/app/src/main/java/com/tiktokshopprofitagent/app/TikTokSharePlugin.java
+          grep -Fq 'MessageDigest.getInstance("SHA-256")' android/app/src/main/java/com/tiktokshopprofitagent/app/TikTokSharePlugin.java
+          if grep -Fq 'FLAG_GRANT_WRITE_URI_PERMISSION' android/app/src/main/java/com/tiktokshopprofitagent/app/TikTokSharePlugin.java; then
+            echo 'Android share must not grant write URI permission' >&2
+            exit 1
+          fi
       - name: Build debug APK
         working-directory: android
         run: bash ./gradlew --no-daemon assembleDebug
