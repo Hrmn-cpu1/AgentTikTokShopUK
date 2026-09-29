@@ -160,7 +160,7 @@ The UI has no screenshot/golden-image tests. Existing automated protection is be
 ## Local verification for this checkpoint
 
 - Before documentation/test checkpoint: Backend `52 passed, 1 skipped`; Frontend `284 passed`; `npm run build` green. On the starting SHA, all four corresponding GitHub workflows were green.
-- The newly added regression test passed locally: `1 passed`; its full backend suite and the new documentation commit still need to complete CI before this checkpoint is considered published.
+- On checkpoint commit `3d44d392d29db652f6a1c6f6d4e5db65d661c2e0`: Backend `53 passed, 1 skipped`; Frontend `284 passed`; build green; Frontend #241, Backend #53, E2E #44 and Android #48 completed successfully; Railway status success; `/ready` remains healthy at migration 0009.
 - `npm` has no configured lint script.
 
 ## Next prompt boundary
