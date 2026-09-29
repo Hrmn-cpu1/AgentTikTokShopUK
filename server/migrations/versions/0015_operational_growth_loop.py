@@ -23,7 +23,7 @@ def upgrade():
 
     op.add_column("growth_control",
         sa.Column("scheduler_enabled", sa.Boolean(), nullable=False,
-                  server_default=sa.text("false")))
+                  server_default=sa.text("true")))
     op.add_column("growth_control",
         sa.Column("scheduler_interval_seconds", sa.Integer(), nullable=False,
                   server_default="300"))
