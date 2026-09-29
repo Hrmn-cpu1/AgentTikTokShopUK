@@ -51,6 +51,10 @@ def evaluate_quality(manifest: dict, plan: dict) -> dict:
         "Plano deve identificar ativos originais/licenciados", "review")
     add("narration", manifest.get("narrationGenerated") is True,
         "Narração em português confirmada; a trilha sintética não conta como narração", "review")
+    tts = manifest.get("tts") if isinstance(manifest.get("tts"), dict) else {}
+    add("production_tts", tts.get("provider") == "PIPER_LOCAL_NEURAL" and
+        tts.get("voice") == "pt_BR-faber-medium",
+        "Voz de produção deve ser Piper neural pt-BR; eSpeak/fallback não é aceito")
     add("render_integrity", len(str(manifest.get("sha256", ""))) == 64 and
         bool(manifest.get("videoCodec")) and bool(manifest.get("thumbnail")),
         "Hash, codec e thumbnail presentes")
