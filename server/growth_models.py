@@ -1,6 +1,6 @@
 """Durable Brazil growth-engine business truth. No external effect is implied by a row."""
 from datetime import datetime
-from sqlalchemy import DateTime, Integer, String, Text, ForeignKey, UniqueConstraint, CheckConstraint
+from sqlalchemy import DateTime, Integer, String, Text, ForeignKey, UniqueConstraint, CheckConstraint, Index
 from sqlalchemy.orm import Mapped, mapped_column
 from .models import Base
 
@@ -112,3 +112,4 @@ class GrowthStateTransition(Base):
     target_state:Mapped[str]=mapped_column(String(40),nullable=False)
     reason:Mapped[str]=mapped_column(Text,nullable=False)
     transitioned_at:Mapped[datetime]=mapped_column(DateTime(timezone=True),nullable=False)
+    __table_args__=(Index("ix_growth_transition_experiment_time", "experiment_id", "transitioned_at"),)
