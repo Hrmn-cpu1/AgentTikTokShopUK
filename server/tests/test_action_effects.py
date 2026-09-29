@@ -50,7 +50,7 @@ def action_db(tmp_path, name="actions"):
         session.add(GrowthCreative(creative_id=creative_id, niche_id=niche_id, trend_id=trend_id,
             experiment_id="e-" + suffix, plan_json="{}", evidence_ref=f"local://{suffix}",
             state="READY", media_ref=key, media_hash=digest, quality_status="QUALITY_PASS",
-            quality_json='{"status":"QUALITY_PASS"}', created_at=now))
+            quality_json='{"status":"QUALITY_PASS"}', policy_status="POLICY_PASS", created_at=now))
         session.flush()
         session.add(GrowthJob(job_id=job_id, creative_id=creative_id, job_type="PREPARE_ASSETS",
             idempotency_key="job:" + suffix, state="RUNNING", attempts=1, available_at=now,

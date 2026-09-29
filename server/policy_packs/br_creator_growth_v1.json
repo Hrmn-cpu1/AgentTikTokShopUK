@@ -1,0 +1,45 @@
+{
+  "version": "BR_CREATOR_GROWTH_V1",
+  "market": "BR",
+  "language": "pt-BR",
+  "objective": "LEGITIMATE_FOLLOWER_GROWTH_AND_INFORMATION_GAIN",
+  "content": {
+    "original_required": true,
+    "copy_pattern_only_never_content": true,
+    "third_party_media_allowed": false,
+    "source_media_copy_allowed": false,
+    "fake_engagement_allowed": false,
+    "private_tiktok_api_allowed": false
+  },
+  "truth": {
+    "unknown_equals_zero": false,
+    "handoff_equals_publication": false,
+    "owner_reported_equals_provider_verified": false,
+    "quality_pass_equals_viral": false,
+    "single_video_equals_learning": false
+  },
+  "aigc": {
+    "classification_required": true,
+    "provenance_required": true,
+    "disclosure_rule": "DISCLOSE_WHEN_PLATFORM_FLOW_REQUIRES"
+  },
+  "publication": {
+    "android_handoff": "SYSTEM_OBSERVED_HANDOFF_ONLY",
+    "human_review_required": true,
+    "autonomous_publish_allowed": false
+  },
+  "learning": {
+    "minimum_views_for_comparison": 100,
+    "minimum_observation_hours": 24,
+    "minimum_replicates_per_hook_family": 3,
+    "mutation_requires": "HYPOTHESIS_READY"
+  },
+  "quotas": {
+    "daily_experiments_default": 3,
+    "daily_handoffs_default": 3
+  },
+  "goal": {
+    "followers": 1000,
+    "stop_scheduler_at_goal": true
+  }
+}

@@ -9,7 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .delivery_gateway import (delivery_summary, prepare_delivery_for_effect,
-    record_android_handoff, record_owner_publication_report)
+    record_android_handoff, record_owner_publication_report, reserve_android_handoff)
 from .delivery_models import DeliveryEffect
 from .growth_models import GrowthMediaArtifact
 from .models import TikTokConnection
@@ -85,6 +85,21 @@ def add_delivery_routes(app, engine, require_operator):
             if delivery is None:
                 raise HTTPException(404, "Unknown delivery")
             return delivery_summary(delivery)
+
+    @app.post("/v1/deliveries/{delivery_id}/reserve-handoff", dependencies=[Depends(require_operator)])
+    def reserve_handoff(delivery_id: str):
+        with Session(engine) as session:
+            try:
+                delivery, event = reserve_android_handoff(session, delivery_id=delivery_id)
+                session.commit()
+                return {"deliveryId": delivery.delivery_id, "quotaEventId": event.event_id,
+                    "state": delivery.state, "reserved": True}
+            except KeyError:
+                session.rollback()
+                raise HTTPException(404, "Unknown delivery") from None
+            except (ValueError, RuntimeError) as exc:
+                session.rollback()
+                raise HTTPException(409, str(exc)) from None
 
     @app.post("/v1/deliveries/{delivery_id}/handoff", dependencies=[Depends(require_operator)])
     def handoff_delivery(delivery_id: str, item: HandoffInput):

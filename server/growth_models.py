@@ -1,6 +1,6 @@
 """Durable Brazil growth-engine business truth. No external effect is implied by a row."""
 from datetime import datetime
-from sqlalchemy import DateTime, Integer, String, Text, ForeignKey, UniqueConstraint, CheckConstraint, Index
+from sqlalchemy import Boolean, DateTime, Integer, String, Text, ForeignKey, UniqueConstraint, CheckConstraint, Index
 from sqlalchemy.orm import Mapped, mapped_column
 from .models import Base
 
@@ -47,6 +47,7 @@ class GrowthCreative(Base):
     exclusion_reason:Mapped[str|None]=mapped_column(String(100))
     quality_status:Mapped[str]=mapped_column(String(20),nullable=False,default="NOT_EVALUATED")
     quality_json:Mapped[str]=mapped_column(Text,nullable=False,default="{}")
+    policy_status:Mapped[str]=mapped_column(String(24),nullable=False,default="NOT_EVALUATED",server_default="NOT_EVALUATED")
     scheduled_at:Mapped[datetime|None]=mapped_column(DateTime(timezone=True))
     created_at:Mapped[datetime]=mapped_column(DateTime(timezone=True),nullable=False)
     __table_args__=(CheckConstraint("state IN ('IDEA','SCRIPTED','ASSETS_PENDING','ASSETS_READY','RENDERING','READY','QUEUED','PUBLISHING','PUBLISHED','OBSERVING','LEARNED','FAILED','BLOCKED')",name="growth_creative_state"),)
@@ -69,8 +70,13 @@ class FollowerSnapshot(Base):
     followers:Mapped[int|None]=mapped_column(Integer)
     source:Mapped[str]=mapped_column(String(40),nullable=False)
     evidence_ref:Mapped[str]=mapped_column(String(1000),nullable=False)
+    truth_classification:Mapped[str]=mapped_column(String(30),nullable=False,default="UNKNOWN",server_default="UNKNOWN")
     observed_at:Mapped[datetime]=mapped_column(DateTime(timezone=True),nullable=False)
-    __table_args__=(CheckConstraint("followers IS NULL OR followers >= 0",name="followers_nonnegative"),)
+    __table_args__=(
+        CheckConstraint("followers IS NULL OR followers >= 0",name="followers_nonnegative"),
+        CheckConstraint("truth_classification IN ('UNKNOWN','OWNER_REPORTED','PROVIDER_VERIFIED')",
+                        name="follower_truth_classification"),
+    )
 
 class GrowthObservation(Base):
     __tablename__="growth_observations"
@@ -101,7 +107,72 @@ class GrowthControl(Base):
     __tablename__="growth_control"
     control_id:Mapped[str]=mapped_column(String(20),primary_key=True)
     mode:Mapped[str]=mapped_column(String(20),nullable=False,default="READY")
+    scheduler_enabled:Mapped[bool]=mapped_column(Boolean,nullable=False,default=True,server_default="true")
+    scheduler_interval_seconds:Mapped[int]=mapped_column(Integer,nullable=False,default=300,server_default="300")
+    daily_experiment_quota:Mapped[int]=mapped_column(Integer,nullable=False,default=3,server_default="3")
+    daily_handoff_quota:Mapped[int]=mapped_column(Integer,nullable=False,default=3,server_default="3")
+    follower_goal:Mapped[int]=mapped_column(Integer,nullable=False,default=1000,server_default="1000")
+    last_scheduler_tick_at:Mapped[datetime|None]=mapped_column(DateTime(timezone=True))
     updated_at:Mapped[datetime]=mapped_column(DateTime(timezone=True),nullable=False)
+    __table_args__=(
+        CheckConstraint("scheduler_interval_seconds >= 60",name="growth_scheduler_interval_min"),
+        CheckConstraint("daily_experiment_quota BETWEEN 1 AND 24",name="growth_daily_experiment_quota"),
+        CheckConstraint("daily_handoff_quota BETWEEN 1 AND 24",name="growth_daily_handoff_quota"),
+        CheckConstraint("follower_goal >= 1",name="growth_follower_goal_positive"),
+    )
+
+
+class GrowthPolicyAssessment(Base):
+    __tablename__="growth_policy_assessments"
+    assessment_id:Mapped[str]=mapped_column(String(36),primary_key=True)
+    creative_id:Mapped[str]=mapped_column(ForeignKey("growth_creatives.creative_id"),nullable=False)
+    artifact_id:Mapped[str]=mapped_column(ForeignKey("growth_media_artifacts.artifact_id"),nullable=False,unique=True)
+    policy_pack_version:Mapped[str]=mapped_column(String(60),nullable=False)
+    policy_status:Mapped[str]=mapped_column(String(24),nullable=False)
+    originality_status:Mapped[str]=mapped_column(String(24),nullable=False)
+    creative_dna_digest:Mapped[str]=mapped_column(String(64),nullable=False)
+    originality_signature:Mapped[str]=mapped_column(String(64),nullable=False)
+    provenance_digest:Mapped[str]=mapped_column(String(64),nullable=False)
+    aigc_classification:Mapped[str]=mapped_column(String(50),nullable=False)
+    disclosure_required:Mapped[bool]=mapped_column(Boolean,nullable=False,default=True,server_default="true")
+    reasons_json:Mapped[str]=mapped_column(Text,nullable=False,default="[]")
+    evaluated_at:Mapped[datetime]=mapped_column(DateTime(timezone=True),nullable=False)
+    __table_args__=(
+        CheckConstraint("policy_status IN ('POLICY_PASS','POLICY_REVIEW','POLICY_FAIL')",
+                        name="growth_policy_status"),
+        CheckConstraint("originality_status IN ('ORIGINAL','DUPLICATE','REVIEW')",
+                        name="growth_originality_status"),
+        Index("ix_growth_policy_creative_time","creative_id","evaluated_at"),
+        Index("ix_growth_policy_signature","originality_signature"),
+    )
+
+
+class GrowthQuotaEvent(Base):
+    __tablename__="growth_quota_events"
+    event_id:Mapped[str]=mapped_column(String(36),primary_key=True)
+    idempotency_key:Mapped[str]=mapped_column(String(180),nullable=False,unique=True)
+    event_type:Mapped[str]=mapped_column(String(20),nullable=False)
+    creative_id:Mapped[str|None]=mapped_column(ForeignKey("growth_creatives.creative_id"))
+    delivery_id:Mapped[str|None]=mapped_column(String(36))
+    occurred_at:Mapped[datetime]=mapped_column(DateTime(timezone=True),nullable=False)
+    __table_args__=(
+        CheckConstraint("event_type IN ('EXPERIMENT','HANDOFF')",name="growth_quota_event_type"),
+        Index("ix_growth_quota_type_time","event_type","occurred_at"),
+    )
+
+
+class GrowthSchedulerTick(Base):
+    __tablename__="growth_scheduler_ticks"
+    tick_id:Mapped[str]=mapped_column(String(36),primary_key=True)
+    decision:Mapped[str]=mapped_column(String(30),nullable=False)
+    reason:Mapped[str]=mapped_column(String(200),nullable=False)
+    creative_id:Mapped[str|None]=mapped_column(String(100))
+    observed_at:Mapped[datetime]=mapped_column(DateTime(timezone=True),nullable=False)
+    __table_args__=(
+        CheckConstraint("decision IN ('STARTED','WAITING','BLOCKED','GOAL_REACHED','QUOTA_REACHED')",
+                        name="growth_scheduler_decision"),
+        Index("ix_growth_scheduler_tick_time","observed_at"),
+    )
 
 class GrowthStateTransition(Base):
     __tablename__="growth_state_transitions"

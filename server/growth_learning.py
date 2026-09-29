@@ -7,12 +7,14 @@ MIN_OBSERVATION_AGE = timedelta(hours=24)
 MIN_REPLICATES_PER_HOOK = 3
 
 
-def eligible_for_comparison(*, quality_status: str, purpose: str, source: str,
+def eligible_for_comparison(*, quality_status: str, policy_status: str, purpose: str, source: str,
                             truth_classification: str, publication_identity: str | None,
                             evidence_ref: str, views: int | None, observed_at: datetime,
                             created_at: datetime) -> tuple[bool, str]:
     if quality_status != "QUALITY_PASS":
         return False, "QUALITY_GATE_NOT_PASSED"
+    if policy_status != "POLICY_PASS":
+        return False, "POLICY_OR_ORIGINALITY_GATE_NOT_PASSED"
     if purpose != "EXPERIMENT":
         return False, "NOT_AN_EXPERIMENT"
     if source != "OWNER_TIKTOK_UI" or truth_classification != "OWNER_REPORTED":

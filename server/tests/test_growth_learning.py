@@ -4,7 +4,7 @@ from server.growth_learning import eligible_for_comparison, compare_hook_familie
 
 
 def test_fourteen_views_can_be_recorded_but_are_not_learning_eligible():
-    eligible, reason = eligible_for_comparison(quality_status="QUALITY_PASS", purpose="EXPERIMENT",
+    eligible, reason = eligible_for_comparison(quality_status="QUALITY_PASS", policy_status="POLICY_PASS", purpose="EXPERIMENT",
         source="OWNER_TIKTOK_UI", truth_classification="OWNER_REPORTED", publication_identity="https://vt.tiktok.com/x1",
         evidence_ref="operator-screenshot:obs-1", views=14,
         observed_at=datetime.now(timezone.utc), created_at=datetime.now(timezone.utc)-timedelta(days=2))
@@ -16,8 +16,8 @@ def test_failed_quality_and_unconfirmed_publication_never_enter_learning():
     base = dict(purpose="EXPERIMENT", source="OWNER_TIKTOK_UI", truth_classification="OWNER_REPORTED",
         publication_identity="https://vt.tiktok.com/x1", evidence_ref="screenshot:1", views=500,
         observed_at=observed, created_at=observed-timedelta(days=2))
-    assert eligible_for_comparison(quality_status="QUALITY_FAIL", **base) == (False, "QUALITY_GATE_NOT_PASSED")
-    assert eligible_for_comparison(quality_status="QUALITY_PASS", publication_identity=None,
+    assert eligible_for_comparison(quality_status="QUALITY_FAIL", policy_status="POLICY_PASS", **base) == (False, "QUALITY_GATE_NOT_PASSED")
+    assert eligible_for_comparison(quality_status="QUALITY_PASS", policy_status="POLICY_PASS", publication_identity=None,
         **{k:v for k,v in base.items() if k!="publication_identity"}) == (False,"PUBLICATION_OR_EVIDENCE_REFERENCE_MISSING")
 
 
@@ -40,3 +40,15 @@ def test_small_or_nonreplicated_samples_return_insufficient_evidence():
     rows=[{"eligible":True,"topic":"same-topic","hookFamily":"question","engagementRate":.2,
         "creativeId":"one","experimentId":"exp-one","evidenceRef":"screen-one"}]
     assert compare_hook_families(rows)["verdict"]=="INSUFFICIENT_EVIDENCE"
+
+
+def test_policy_gate_is_required_for_learning_even_with_real_owner_metrics():
+    observed = datetime.now(timezone.utc)
+    result = eligible_for_comparison(
+        quality_status="QUALITY_PASS", policy_status="POLICY_REVIEW",
+        purpose="EXPERIMENT", source="OWNER_TIKTOK_UI",
+        truth_classification="OWNER_REPORTED",
+        publication_identity="https://vt.tiktok.com/policy",
+        evidence_ref="owner-evidence:policy", views=500,
+        observed_at=observed, created_at=observed-timedelta(days=2))
+    assert result == (False, "POLICY_OR_ORIGINALITY_GATE_NOT_PASSED")
