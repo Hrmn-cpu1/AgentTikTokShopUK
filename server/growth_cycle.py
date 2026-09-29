@@ -43,6 +43,18 @@ def utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _control_row(session: Session) -> GrowthControl:
+    control = session.get(GrowthControl, "default")
+    if control is None:
+        control = GrowthControl(control_id="default", mode="READY",
+            scheduler_enabled=True, scheduler_interval_seconds=300,
+            daily_experiment_quota=3, daily_handoff_quota=3,
+            follower_goal=1000, updated_at=utcnow())
+        session.add(control)
+        session.flush()
+    return control
+
+
 def _aware(value: datetime) -> datetime:
     if value.tzinfo is None or value.utcoffset() is None:
         return value.replace(tzinfo=timezone.utc)
@@ -76,9 +88,7 @@ def _latest_delivery(session: Session, creative_id: str):
 
 def cycle_gate(session: Session, *, trigger: str, now: datetime | None = None) -> dict:
     now = now or utcnow()
-    control = session.get(GrowthControl, "default")
-    if control is None:
-        return {"allowed": False, "decision": "BLOCKED", "reason": "CONTROL_NOT_INITIALIZED"}
+    control = _control_row(session)
     if trigger == "SCHEDULER" and not scheduler_enabled(control):
         return {"allowed": False, "decision": "WAITING", "reason": "SCHEDULER_DISABLED"}
     if control.mode not in {"READY", "RUNNING"}:
@@ -166,6 +176,30 @@ def run_growth_cycle(engine, source, *, trigger: str = "MANUAL") -> dict:
     with Session(engine) as session:
         gate = cycle_gate(session, trigger=trigger, now=now)
         if not gate["allowed"]:
+            if trigger == "MANUAL" and gate["reason"] in {
+                    "DURABLE_JOB_IN_FLIGHT", "HUMAN_PUBLICATION_OBSERVATION_REQUIRED",
+                    "ANDROID_HANDOFF_EVIDENCE_REQUIRED", "CONTROL_MODE_ACTION_REQUIRED"}:
+                current = _latest_creative(session)
+                if current is not None:
+                    job = session.scalar(select(GrowthJob).where(
+                        GrowthJob.creative_id == current.creative_id
+                    ).order_by(GrowthJob.created_at.desc()).limit(1))
+                    try:
+                        plan = json.loads(current.plan_json)
+                    except (TypeError, ValueError):
+                        plan = {}
+                    return {
+                        "state": current.state,
+                        "duplicate": True,
+                        "creativeId": current.creative_id,
+                        "experimentId": current.experiment_id,
+                        "market": "BR",
+                        "plan": plan,
+                        "jobState": job.state if job else "UNKNOWN",
+                        "videoUrl": f"/v1/growth/creatives/{current.creative_id}/video",
+                        "delivery": {"status": "NOT_SENT", "publication": "UNKNOWN"},
+                        "reason": gate["reason"],
+                    }
             raise CycleBlocked(gate["reason"], gate["reason"])
 
     ranked = _rank_candidates(source, now)
@@ -179,7 +213,7 @@ def run_growth_cycle(engine, source, *, trigger: str = "MANUAL") -> dict:
         control = session.scalar(select(GrowthControl).where(
             GrowthControl.control_id == "default").with_for_update())
         if control is None:
-            raise CycleBlocked("CONTROL_NOT_INITIALIZED", "Growth control is not initialized")
+            control = _control_row(session)
         gate = cycle_gate(session, trigger=trigger, now=now)
         if not gate["allowed"]:
             raise CycleBlocked(gate["reason"], gate["reason"])
@@ -301,6 +335,7 @@ def run_growth_cycle(engine, source, *, trigger: str = "MANUAL") -> dict:
         session.commit()
         return {
             "state": creative.state,
+            "duplicate": False,
             "creativeId": creative_id,
             "experimentId": experiment_id,
             "source": chosen.source,
