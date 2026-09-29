@@ -142,6 +142,7 @@ class GrowthMediaArtifact(Base):
     failure_reason: Mapped[str | None] = mapped_column(String(200))
     __table_args__ = (
         UniqueConstraint("render_job_id", "source_render_attempt", name="uq_media_job_attempt"),
+        UniqueConstraint("artifact_id", "creative_id", name="uq_media_artifact_creative"),
         Index("ix_media_creative_state_created", "creative_id", "storage_state", "created_at"),
         CheckConstraint("storage_provider = 'RAILWAY_VOLUME'", name="media_storage_provider"),
         CheckConstraint("storage_state IN ('RENDERED_TEMPORARY','STORAGE_PENDING','STORING','STORED_UNVERIFIED','STORED_VERIFIED','STORAGE_FAILED','ARTIFACT_DISCARDED','ARTIFACT_MISSING','ARTIFACT_CORRUPT','UNKNOWN')", name="media_storage_state"),

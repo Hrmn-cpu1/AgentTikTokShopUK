@@ -1,6 +1,6 @@
 """Durable lease-based growth queue. Safe across worker restarts and duplicate ticks."""
 from datetime import datetime, timedelta, timezone
-from sqlalchemy import DateTime, Integer, String, Text, CheckConstraint, ForeignKey, Index, BigInteger
+from sqlalchemy import DateTime, Integer, String, Text, CheckConstraint, ForeignKey, Index, BigInteger, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 from .models import Base
 
@@ -24,6 +24,7 @@ class GrowthJob(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     __table_args__ = (
+        UniqueConstraint("job_id", "creative_id", name="uq_growth_job_id_creative"),
         CheckConstraint("state IN ('PENDING','RUNNING','SUCCEEDED','RETRY','FAILED','BLOCKED')", name="growth_job_state"),
         CheckConstraint("attempts >= 0", name="growth_job_attempts_nonnegative"),
         Index("ix_growth_jobs_due", "state", "available_at"),
