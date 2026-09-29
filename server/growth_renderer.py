@@ -5,6 +5,7 @@ from pathlib import Path
 import hashlib
 import json
 import math
+import os
 import re
 import shutil
 import subprocess
@@ -112,37 +113,58 @@ def _background(index: int, seed: str) -> Image.Image:
 
 
 def _speech_tracks(scenes, directory):
-    speaker = shutil.which("espeak-ng")
-    fallback_durations = [2.0 if scene.get("hook") else 3.0 for scene in scenes]
-    if not speaker:
-        return None, fallback_durations
+    """Generate production narration with local neural Piper pt-BR.
+
+    eSpeak is deliberately not accepted as a production voice. The voice model is
+    immutable infrastructure and must exist before a render is allowed to pass.
+    """
+    model_path = Path(os.environ.get("PIPER_MODEL_PATH", "/opt/piper/pt_BR-faber-medium.onnx"))
+    if not model_path.is_file():
+        raise RuntimeError(f"Piper pt-BR model unavailable: {model_path}")
+    try:
+        from piper import PiperVoice
+    except ImportError as exc:
+        raise RuntimeError("piper-tts is required for production narration") from exc
+
+    voice = PiperVoice.load(model_path)
     chunks = []
     durations = []
-    rate = 22050
+    rate = None
     for index, scene in enumerate(scenes):
         path = directory / f"voice-{index:02}.wav"
-        result = subprocess.run([speaker, "-v", "pt-br", "-s", "165", "-w", str(path), scene["narration"]],
-                                capture_output=True, timeout=20, check=False)
-        if result.returncode or not path.is_file():
-            return None, fallback_durations
+        with wave.open(str(path), "wb") as wav_out:
+            voice.synthesize_wav(scene["narration"], wav_out)
         with wave.open(str(path), "rb") as wav:
             params = wav.getparams()
             samples = wav.readframes(wav.getnframes())
         if params.nchannels != 1 or params.sampwidth != 2:
-            return None, fallback_durations
-        if params.framerate != rate:
+            raise RuntimeError("Piper produced unsupported WAV format")
+        if rate is None:
             rate = params.framerate
-        duration = len(samples) / (params.framerate * params.nchannels * params.sampwidth)
-        durations.append(min(2.0, max(1.55, duration + 0.12)) if scene.get("hook") else max(2.65, duration + 0.5))
-        pause = 0.05 if scene.get("hook") else 0.18
+        elif rate != params.framerate:
+            raise RuntimeError("Piper sample rate changed between scenes")
+        spoken = len(samples) / (params.framerate * params.nchannels * params.sampwidth)
+        planned = float(scene.get("seconds") or (1.9 if scene.get("hook") else 3.0))
+        duration = max(planned, spoken + (0.10 if scene.get("hook") else 0.28))
+        if scene.get("hook") and duration > 2.5:
+            raise RuntimeError("Automatic hook narration exceeds 2.5 seconds")
+        durations.append(duration)
+        pause = 0.04 if scene.get("hook") else 0.14
         chunks.append(samples + b"\x00\x00" * round(params.framerate * pause))
+    if rate is None:
+        raise RuntimeError("Piper narration produced no audio")
     voice_path = directory / "narration.pt-BR.wav"
     with wave.open(str(voice_path), "wb") as out:
         out.setnchannels(1)
         out.setsampwidth(2)
         out.setframerate(rate)
         out.writeframes(b"".join(chunks))
-    return voice_path, durations
+    return voice_path, durations, {
+        "provider": "PIPER_LOCAL_NEURAL",
+        "voice": "pt_BR-faber-medium",
+        "sampleRate": rate,
+        "modelPath": model_path.name,
+    }
 
 
 def _motion_frame(plate, index, local_frame, frames_in_scene, phrase, label, accent):
@@ -195,7 +217,7 @@ def render_growth_plan(plan_json: str, output_dir: str | Path | None = None,
         for index, scene in enumerate(scenes):
             scene["narration"] = str(scene.get("narration") or scene["text"]).strip()
             scene["visualLabel"] = str(scene.get("visualLabel") or f"Cena {index + 1} · {plan.get('topic', 'Brasil')}")[:52]
-        voice_path, durations = _speech_tracks(scenes, directory)
+        voice_path, durations, tts_meta = _speech_tracks(scenes, directory)
         scenes = [dict(scene, seconds=durations[index]) for index, scene in enumerate(scenes)]
         duration_total = sum(scene["seconds"] for scene in scenes)
         total_frames = round(duration_total * FPS)
@@ -271,8 +293,8 @@ def render_growth_plan(plan_json: str, output_dir: str | Path | None = None,
         blank_check = "FAIL" if blank_scan.returncode != 0 or any(float(item) >= 0.6 for item in black_intervals) else "PASS"
         manifest = {
             "rendererVersion": "2.2.0", "format": "mp4", "videoCodec": "h264", "audioCodec": "aac",
-            "audioDescription": "Portuguese narration plus original low-volume tone bed" if voice_path else "synthetic tone bed; narration unavailable in this runtime",
-            "narrationGenerated": bool(voice_path), "narrationLanguage": "pt-BR", "width": WIDTH,
+            "audioDescription": "Piper neural Brazilian Portuguese narration plus original low-volume tone bed",
+            "narrationGenerated": True, "narrationLanguage": "pt-BR", "tts": tts_meta, "width": WIDTH,
             "height": HEIGHT, "aspectRatio": "9:16", "durationSeconds": round(duration_total, 2), "fps": FPS,
             "sceneCount": len(scenes), "sceneTransitions": max(0, len(scenes) - 1), "animatedCropZoom": True,
             "captions": "short synchronized scene phrases", "captionFile": srt_path.name,
