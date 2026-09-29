@@ -27,8 +27,13 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: sudo apt-get update && sudo apt-get install -y ffmpeg fonts-dejavu-core espeak-ng
+      - run: sudo apt-get update && sudo apt-get install -y ffmpeg fonts-dejavu-core
       - run: python -m pip install -r server/requirements.txt
+      - name: Download production pt-BR voice
+        run: |
+          mkdir -p .piper
+          python -m piper.download_voices --data-dir .piper pt_BR-faber-medium
+          echo "PIPER_MODEL_PATH=$GITHUB_WORKSPACE/.piper/pt_BR-faber-medium.onnx" >> "$GITHUB_ENV"
       - run: python -m compileall -q server
       - run: alembic upgrade head
       - run: alembic check
