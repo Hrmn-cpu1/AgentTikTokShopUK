@@ -349,6 +349,7 @@ def run_growth_cycle(engine, source, *, trigger: str = "MANUAL") -> dict:
             "plan": plan,
             "jobId": job.job_id,
             "jobState": "PENDING",
+            "videoUrl": f"/v1/growth/creatives/{creative_id}/video",
             "trigger": trigger,
             "learningApplied": learning_id,
             "delivery": {"status": "NOT_SENT", "publication": "UNKNOWN"},
