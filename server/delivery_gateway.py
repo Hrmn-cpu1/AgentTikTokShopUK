@@ -47,7 +47,7 @@ def _aware(value: datetime) -> datetime:
     return value.astimezone(timezone.utc)
 
 
-def _validate_delivery_binding(session: Session, delivery: DeliveryEffect):
+def _validate_delivery_binding(session: Session, delivery: DeliveryEffect, *, require_policy: bool = True):
     contract = session.get(ActionContract, delivery.action_contract_id)
     effect = session.get(EffectLedger, delivery.effect_id)
     artifact = session.get(GrowthMediaArtifact, delivery.artifact_id)
@@ -66,7 +66,7 @@ def _validate_delivery_binding(session: Session, delivery: DeliveryEffect):
         raise ValueError("delivery requires a STORED_VERIFIED / QUALITY_PASS artifact")
     if creative.state != "READY" or creative.quality_status != "QUALITY_PASS":
         raise ValueError("delivery requires a READY / QUALITY_PASS creative")
-    if creative.policy_status != "POLICY_PASS":
+    if require_policy and creative.policy_status != "POLICY_PASS":
         raise ValueError("delivery requires the Brazil originality/policy gate to pass")
     if _PROVIDER_FOR_TARGET.get(delivery.target) != delivery.provider:
         raise RuntimeError("delivery provider does not match target")
@@ -331,7 +331,8 @@ def record_owner_publication_report(
     delivery = session.get(DeliveryEffect, delivery_id)
     if delivery is None:
         raise KeyError(delivery_id)
-    _contract, effect, _artifact, _creative = _validate_delivery_binding(session, delivery)
+    _contract, effect, _artifact, _creative = _validate_delivery_binding(
+        session, delivery, require_policy=False)
     evidence = record_effect_evidence(
         session,
         effect_id=effect.effect_id,
