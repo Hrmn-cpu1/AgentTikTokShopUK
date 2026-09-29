@@ -13,7 +13,7 @@ from .growth_queue_models import GrowthJob, utcnow
 from .growth_renderer import render_growth_plan
 from .media_storage import (MediaArtifactCorrupt, MediaArtifactMissing, MediaQuotaExceeded,
     MediaStorageError, MediaStorageNotConfigured, RailwayVolumeMediaStore, artifact_object_key, hash_file)
-from .delivery_gateway import prepare_android_handoff_from_render
+from . import delivery_models  # register delivery table without importing the gateway
 
 logger = logging.getLogger(__name__)
 LEASE_SECONDS = 120
@@ -251,6 +251,7 @@ def _finish_verified_artifact(session: Session, job: GrowthJob, creative: Growth
         creative.state = "READY"
         # Freeze device-handoff identity while the render lease is still current.
         # The Android share itself remains a later user-device action.
+        from .delivery_gateway import prepare_android_handoff_from_render
         prepare_android_handoff_from_render(session, job=job, creative=creative, artifact=artifact)
     else:
         # Stored media under QUALITY_REVIEW is durable evidence, not ready for delivery.
