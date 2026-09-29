@@ -3,7 +3,7 @@ from datetime import timedelta
 from uuid import uuid4
 from sqlalchemy import select
 from sqlalchemy.orm import Session
-from .growth_models import GrowthCreative
+from .growth_models import GrowthControl, GrowthCreative
 from .growth_queue_models import GrowthJob, utcnow
 from .growth_renderer import render_growth_plan
 
@@ -28,6 +28,9 @@ def seed_scripted_creatives(session: Session):
     return len(rows)
 
 def claim_due_job(session: Session, worker_id: str):
+    control = session.get(GrowthControl, "default")
+    if control is not None and control.mode != "READY":
+        return None
     now = utcnow()
     job = session.scalar(select(GrowthJob).where(
         ((GrowthJob.state.in_(("PENDING", "RETRY"))) | ((GrowthJob.state == "RUNNING") & (GrowthJob.lease_until < now))), GrowthJob.available_at <= now)
@@ -44,6 +47,15 @@ def claim_due_job(session: Session, worker_id: str):
     return job
 
 def finish_internal_job(session: Session, job: GrowthJob):
+    control = session.get(GrowthControl, "default")
+    if control is not None and control.mode != "READY":
+        job.state = "BLOCKED"
+        job.last_error = "Growth agent is paused or stopped"
+        job.lease_owner = None
+        job.lease_until = None
+        job.updated_at = utcnow()
+        session.commit()
+        return job.state
     creative = session.get(GrowthCreative, job.creative_id)
     if not creative:
         job.state = "FAILED"

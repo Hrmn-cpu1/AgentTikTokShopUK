@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import tempfile
 import wave
+from collections.abc import Callable
 
 from PIL import Image, ImageDraw, ImageFont
 
@@ -173,7 +174,8 @@ def _motion_frame(plate, index, local_frame, frames_in_scene, phrase, label, acc
     return frame
 
 
-def render_growth_plan(plan_json: str, output_dir: str | Path | None = None):
+def render_growth_plan(plan_json: str, output_dir: str | Path | None = None,
+                      should_cancel: Callable[[], bool] | None = None):
     plan = json.loads(plan_json)
     hook = str(plan.get("hook") or "").strip()
     raw_script = plan.get("script")
@@ -223,6 +225,12 @@ def render_growth_plan(plan_json: str, output_dir: str | Path | None = None):
             accent = tuple(int(accent_hex[pos:pos + 2], 16) for pos in (1, 3, 5))
             transition = min(round(0.24 * FPS), count // 3) if previous is not None else 0
             for local_frame in range(count):
+                if should_cancel is not None and local_frame % FPS == 0 and should_cancel():
+                    if process.stdin and not process.stdin.closed:
+                        process.stdin.close()
+                    process.terminate()
+                    process.wait(timeout=5)
+                    raise InterruptedError("Growth render cancelled by operator control")
                 frame = _motion_frame(plate, index, local_frame, count, str(scene["text"]),
                                       scene["visualLabel"], accent)
                 if previous is not None and local_frame < transition:

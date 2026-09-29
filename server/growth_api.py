@@ -13,7 +13,10 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .growth_brain import TrendCandidate, build_creative_plan, canonical_plan, choose_niche, trend_score
-from .growth_models import GrowthCreative, NicheHypothesis, TrendSignal
+from .growth_models import (GrowthCreative, GrowthControl, GrowthLearning, GrowthObservation,
+    FollowerSnapshot, NicheHypothesis, PublicationIntent, TrendSignal)
+from .growth_queue_models import GrowthJob
+from .models import TikTokConnection
 from .growth_renderer import render_growth_plan
 from .trend_sources import GoogleTrendsBrazilRSS, rank_public_signal
 
@@ -34,9 +37,132 @@ class CreativeRequest(BaseModel):
 def add_growth_routes(app, engine, require_operator, trend_source=None):
     source = trend_source or GoogleTrendsBrazilRSS()
 
+    def control_row(session):
+        control = session.get(GrowthControl, "default")
+        if control is None:
+            control = GrowthControl(control_id="default", mode="READY", updated_at=datetime.now(timezone.utc))
+            session.add(control)
+            session.flush()
+        return control
+
+    @app.get("/v1/growth/control", dependencies=[Depends(require_operator)])
+    def get_growth_control():
+        with Session(engine) as session:
+            control = control_row(session)
+            session.commit()
+            return {"mode": control.mode, "updatedAt": control.updated_at.isoformat(),
+                "execution": "ON_DEMAND", "scheduler": "NOT_CONFIGURED"}
+
+    @app.post("/v1/growth/control", dependencies=[Depends(require_operator)])
+    def set_growth_control(payload: dict):
+        action = payload.get("action")
+        modes = {"START": "READY", "PAUSE": "PAUSED", "EMERGENCY_STOP": "STOPPED"}
+        if action not in modes:
+            raise HTTPException(422, "action must be START, PAUSE, or EMERGENCY_STOP")
+        now = datetime.now(timezone.utc)
+        with Session(engine) as session:
+            control = control_row(session)
+            control.mode = modes[action]
+            control.updated_at = now
+            if action == "EMERGENCY_STOP":
+                jobs = session.scalars(select(GrowthJob).where(GrowthJob.state.in_(["PENDING", "RETRY"]))).all()
+                for job in jobs:
+                    job.state = "BLOCKED"
+                    job.last_error = "Blocked by operator emergency stop"
+                    job.updated_at = now
+            session.commit()
+            return {"mode": control.mode, "updatedAt": control.updated_at.isoformat(),
+                "execution": "ON_DEMAND", "scheduler": "NOT_CONFIGURED"}
+
+    @app.get("/v1/growth/overview", dependencies=[Depends(require_operator)])
+    def growth_overview():
+        with Session(engine) as session:
+            control = control_row(session)
+            creatives = session.scalars(select(GrowthCreative).order_by(GrowthCreative.created_at.desc()).limit(50)).all()
+            observations = session.scalars(select(GrowthObservation).order_by(GrowthObservation.observed_at.desc()).limit(100)).all()
+            followers = session.scalars(select(FollowerSnapshot).order_by(FollowerSnapshot.observed_at.desc()).limit(1)).all()
+            intents = session.scalars(select(PublicationIntent).order_by(PublicationIntent.created_at.desc()).limit(50)).all()
+            learnings = session.scalars(select(GrowthLearning).order_by(GrowthLearning.created_at.desc()).limit(50)).all()
+            jobs = session.scalars(select(GrowthJob).order_by(GrowthJob.created_at.desc()).limit(20)).all()
+            connection = session.scalar(select(TikTokConnection).where(TikTokConnection.operator_id == "primary"))
+            total_creatives = session.scalar(select(func.count(GrowthCreative.creative_id))) or 0
+            total_rendered = session.scalar(select(func.count(GrowthCreative.creative_id)).where(GrowthCreative.media_hash.is_not(None))) or 0
+            total_ready = session.scalar(select(func.count(GrowthCreative.creative_id)).where(GrowthCreative.state == "READY")) or 0
+            total_observations = session.scalar(select(func.count(GrowthObservation.observation_id))) or 0
+            total_learnings = session.scalar(select(func.count(GrowthLearning.learning_id))) or 0
+            total_pending_jobs = session.scalar(select(func.count(GrowthJob.job_id)).where(GrowthJob.state.in_(["PENDING", "RETRY", "RUNNING"]))) or 0
+            creatives_by_id = {item.creative_id: item for item in creatives}
+            latest_observations = {}
+            for item in observations:
+                latest_observations.setdefault(item.creative_id, item)
+            intents_by_creative = {}
+            for item in intents:
+                intents_by_creative.setdefault(item.creative_id, item)
+            learning_by_creative = {}
+            for item in learnings:
+                learning_by_creative.setdefault(item.creative_id, item)
+            experiment_items = []
+            media_items = []
+            for creative in creatives:
+                plan = json.loads(creative.plan_json)
+                trend = session.get(TrendSignal, creative.trend_id)
+                observation = latest_observations.get(creative.creative_id)
+                intent = intents_by_creative.get(creative.creative_id)
+                learning = learning_by_creative.get(creative.creative_id)
+                metrics = json.loads(trend.metrics_json) if trend else {}
+                evidence = plan.get("sourceEvidence", {})
+                record = {"creativeId": creative.creative_id, "experimentId": creative.experiment_id,
+                    "state": creative.state, "createdAt": creative.created_at.isoformat(),
+                    "topic": trend.topic if trend else "UNKNOWN", "source": trend.source if trend else "UNKNOWN",
+                    "sourceRef": trend.source_ref if trend else None, "observedAt": trend.observed_at.isoformat() if trend else None,
+                    "evidence": trend.evidence if trend else "UNKNOWN", "rankingScore": evidence.get("rankingScore"),
+                    "rankingComponents": evidence.get("rankingComponents"), "selectionReason": evidence.get("selectionReason"),
+                    "metrics": metrics, "plan": plan,
+                    "delivery": {"state": intent.provider_status if intent else "NOT_REQUESTED",
+                        "provider": intent.provider if intent else None, "providerId": intent.provider_publish_id if intent else None},
+                    "observation": None if observation is None else {"source": observation.source,
+                        "evidenceRef": observation.evidence_ref, "observedAt": observation.observed_at.isoformat(),
+                        "views": observation.views, "likes": observation.likes, "comments": observation.comments,
+                        "shares": observation.shares, "followersBefore": observation.followers_before,
+                        "followersAfter": observation.followers_after},
+                    "learning": None if learning is None else {"verdict": learning.verdict, "rationale": learning.rationale,
+                        "nextMutation": json.loads(learning.next_mutation_json), "createdAt": learning.created_at.isoformat()}}
+                experiment_items.append(record)
+                if creative.media_hash:
+                    media_items.append({"creativeId": creative.creative_id, "experimentId": creative.experiment_id,
+                        "topic": record["topic"], "state": creative.state, "mediaHash": creative.media_hash,
+                        "createdAt": creative.created_at.isoformat(), "videoUrl": f"/v1/growth/creatives/{creative.creative_id}/video"})
+            observations_count = total_observations
+            follower_snapshot = followers[0] if followers else None
+            session.commit()
+            return {"control": {"mode": control.mode, "updatedAt": control.updated_at.isoformat(),
+                    "execution": "ON_DEMAND", "scheduler": "NOT_CONFIGURED"},
+                "identity": {"status": "AVAILABLE" if connection and connection.status == "ACTIVE" else "UNKNOWN",
+                    "source": "tiktok_connections.status" if connection else "No server connection record",
+                    "connectedAt": connection.connected_at.isoformat() if connection else None},
+                "capabilities": {"discover": "PARTIAL", "analyze": "PARTIAL", "create": "PARTIAL",
+                    "render": "REAL", "delivery": "MANUAL", "autonomousPublish": "NOT_PROVEN",
+                    "observe": "NOT_PROVEN" if not observations_count else "PARTIAL",
+                    "learn": "NOT_PROVEN" if not learnings else "PARTIAL", "repeat": "NOT_PROVEN"},
+                "counts": {"experiments": total_creatives, "rendered": total_rendered,
+                    "ready": total_ready, "observations": observations_count,
+                    "learningRecords": total_learnings, "pendingJobs": total_pending_jobs},
+                "followers": None if follower_snapshot is None else {"value": follower_snapshot.followers,
+                    "source": follower_snapshot.source, "observedAt": follower_snapshot.observed_at.isoformat(),
+                    "evidenceRef": follower_snapshot.evidence_ref},
+                "experiments": experiment_items, "media": media_items,
+                "observations": [{"creativeId": o.creative_id, "source": o.source, "evidenceRef": o.evidence_ref,
+                    "observedAt": o.observed_at.isoformat(), "views": o.views, "likes": o.likes,
+                    "comments": o.comments, "shares": o.shares} for o in observations]}
+
     @app.post("/v1/growth/run", dependencies=[Depends(require_operator)])
     def run_first_experiment():
         """Discover current public BR signals, select deterministically and create one original plan."""
+        with Session(engine) as session:
+            control = control_row(session)
+            mode = control.mode
+        if mode != "READY":
+            raise HTTPException(409, f"Growth agent is {mode.lower()}")
         try:
             candidates = source.collect()
         except Exception as exc:
@@ -54,6 +180,9 @@ def add_growth_routes(app, engine, require_operator, trend_source=None):
         metrics = dict(chosen.metrics)
         metrics["ranking"] = chosen_score
         with Session(engine) as session:
+            if control_row(session).mode != "READY":
+                session.rollback()
+                raise HTTPException(409, "Growth agent was stopped before the experiment could be saved")
             trend = session.get(TrendSignal, chosen.trend_id)
             if trend is None:
                 trend = TrendSignal(trend_id=chosen.trend_id, source=chosen.source, source_ref=chosen.source_ref,
@@ -101,13 +230,23 @@ def add_growth_routes(app, engine, require_operator, trend_source=None):
     @app.get("/v1/growth/creatives/{creative_id}/video", dependencies=[Depends(require_operator)])
     def render_experiment_video(creative_id: str):
         with Session(engine) as session:
+            if control_row(session).mode != "READY":
+                raise HTTPException(409, "Growth agent is paused or stopped")
             creative = session.get(GrowthCreative, creative_id)
             if not creative:
                 raise HTTPException(404, "Unknown creative")
             plan_json = creative.plan_json
         directory = tempfile.mkdtemp(prefix="growth-delivery-")
+        def cancelled():
+            with Session(engine) as session:
+                control = session.get(GrowthControl, "default")
+                return control is not None and control.mode != "READY"
         try:
-            output, digest, cleanup = render_growth_plan(plan_json, output_dir=directory)
+            output, digest, cleanup = render_growth_plan(plan_json, output_dir=directory, should_cancel=cancelled)
+        except InterruptedError:
+            import shutil
+            shutil.rmtree(directory, ignore_errors=True)
+            raise HTTPException(409, "Render cancelled by operator control") from None
         except Exception:
             import shutil
             shutil.rmtree(directory, ignore_errors=True)

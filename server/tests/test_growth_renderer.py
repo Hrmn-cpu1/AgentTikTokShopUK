@@ -49,3 +49,12 @@ def test_growth_plan_fails_closed_without_script():
         assert False
     except ValueError:
         pass
+
+def test_growth_plan_honors_emergency_cancel_checkpoint(tmp_path):
+    plan = json.dumps({"topic":"cancel check", "hook":"Stop safely", "script":["one", "two", "three"],
+        "scenePlan":[{"seconds":2,"text":"One"},{"seconds":2,"text":"Two"},{"seconds":2,"text":"Three"}]})
+    try:
+        render_growth_plan(plan, output_dir=tmp_path, should_cancel=lambda: True)
+        assert False, "expected active render to be cancelled"
+    except InterruptedError as error:
+        assert "cancelled" in str(error)

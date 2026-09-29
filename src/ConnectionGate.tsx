@@ -3,7 +3,7 @@ import { Capacitor } from '@capacitor/core';
 import { App as NativeApp } from '@capacitor/app';
 import { Browser } from '@capacitor/browser';
 import { apiJson as json, operatorCsrf } from './apiClient';
-import GrowthStudio from './GrowthStudio';
+import GrowthWorkspace from './GrowthWorkspace';
 
 type Capability = 'AVAILABLE' | 'REQUIRES_APPROVAL' | 'BLOCKED' | 'UNKNOWN';
 type Connection = { connectionId:string; providerUserId:string; displayName:string|null;
@@ -113,20 +113,14 @@ export default function ConnectionGate() {
     {connection?.authorizationConfigured?<button className="connection-primary" onClick={()=>{void startTikTok()}}>Continuar com TikTok</button>:
       <><button className="connection-primary" disabled>Continuar com TikTok</button><p>É necessário configurar o aplicativo oficial de desenvolvedor e a criptografia no servidor.</p></>}
     <p className="connection-note">A conexão verifica a identidade. A publicação usa apenas as permissões autorizadas pelo próprio usuário.</p>{legal}
-    <GrowthStudio />
     {message&&<p role="alert">{message}</p>}</div>;
   const active=connection.connection.status==='ACTIVE' && connection.capabilities.IDENTITY==='AVAILABLE';
+  if(active)return <GrowthWorkspace onDisconnect={()=>void disconnect()}/>;
   return <div className="connection-shell"><h1>AgentTikTok Shop</h1>
-    <div className="connection-card"><strong>TikTok · {connection.connection.displayName??'Conta'}</strong>
-      <span>{active?'CONECTADO':'CONEXÃO PRECISA DE ATENÇÃO'}</span><small>Identidade: {connection.connection.providerUserId}</small></div>
-    <h2>Permissões da conta</h2><div className="capability-list">
-      {Object.entries(labels).map(([key,label])=><div key={key}><span>{label}</span>
-        <b className={connection.capabilities[key]==='AVAILABLE'?'known':''}>{statusText[connection.capabilities[key]]??'DESCONHECIDO'}</b></div>)}
-    </div><p className="connection-note">O Login Kit confirma identidade, mas não aprova Shop, afiliação, publicação ou saque.</p>
-    {active?<><p className="connection-warning">Brasil · Operação de afiliado ainda bloqueada: o servidor mantém registros históricos em GBP. A migração de dados e a aprovação da conta precisam ser comprovadas antes de registrar vendas em R$.</p>
-      <GrowthStudio />
-    </>:<button className="connection-primary" onClick={()=>{void startTikTok()}}>Reconectar TikTok</button>}
-    <button className="connection-secondary" onClick={()=>{void disconnect()}}>Desconectar TikTok</button>
-    {message&&<p role="alert">{message}</p>}{legal}
-  </div>;
+    <div className="connection-card"><strong>TikTok · {connection.connection.displayName??'Conta'}</strong><span>CONEXÃO PRECISA DE ATENÇÃO</span>
+      <small>Identidade: {connection.connection.providerUserId}</small></div>
+    <h2>Permissões da conta</h2><div className="capability-list">{Object.entries(labels).map(([key,label])=><div key={key}><span>{label}</span>
+      <b className={connection.capabilities[key]==='AVAILABLE'?'known':''}>{statusText[connection.capabilities[key]]??'DESCONHECIDO'}</b></div>)}</div>
+    <p className="connection-note">O Login Kit confirma identidade, mas não aprova Shop, afiliação, publicação ou saque.</p>
+    <button className="connection-primary" onClick={()=>{void startTikTok()}}>Reconectar TikTok</button>{message&&<p role="alert">{message}</p>}{legal}</div>;
 }

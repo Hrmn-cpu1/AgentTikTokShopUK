@@ -126,6 +126,47 @@ def test_public_trend_to_original_mp4_is_idempotent_and_does_not_claim_delivery(
         assert creative.state == "READY" and creative.media_hash == media.headers["x-creative-sha256"]
 
 
+def test_growth_workspace_reads_server_truth_and_controls(database):
+    c = client(database)
+    initial = c.get("/v1/growth/overview").json()
+    assert initial["control"]["mode"] == "READY"
+    assert initial["control"]["scheduler"] == "NOT_CONFIGURED"
+    assert initial["followers"] is None
+    assert initial["counts"]["experiments"] == 0
+    paused = c.post("/v1/growth/control", json={"action": "PAUSE"})
+    assert paused.status_code == 200 and paused.json()["mode"] == "PAUSED"
+    assert c.post("/v1/growth/run").status_code == 409
+    started = c.post("/v1/growth/control", json={"action": "START"})
+    assert started.status_code == 200 and started.json()["mode"] == "READY"
+    assert c.post("/v1/growth/control", json={"action": "NOT_A_CONTROL"}).status_code == 422
+
+
+def test_emergency_stop_blocks_queued_work_and_render_request(database):
+    from server.growth_queue_models import GrowthJob
+    from server.growth_queue_models import utcnow
+    from server.trend_sources import TrendEvidence
+    now = datetime.now(timezone.utc)
+    class FixtureTrendSource:
+        def collect(self):
+            return [TrendEvidence("gtr-br-stop-test", "tema de teste", "PUBLIC_FIXTURE",
+                "https://example.test/trends", "BR", "BR_SIGNAL", "UNKNOWN", now, now,
+                {"views": None, "likes": None, "comments": None, "shares": None}, "Fixture evidence")]
+    c = TestClient(create_app(database, TOKEN, trend_source=FixtureTrendSource()),
+        headers={"Authorization": f"Bearer {TOKEN}"})
+    result = c.post("/v1/growth/run").json()
+    job_now = utcnow()
+    with Session(create_engine(database)) as session:
+        session.add(GrowthJob(job_id="pending-stop-test", creative_id=result["creativeId"],
+            job_type="RENDER_VIDEO", idempotency_key="stop-test:render", state="PENDING", attempts=0,
+            available_at=job_now, created_at=job_now, updated_at=job_now))
+        session.commit()
+    stopped = c.post("/v1/growth/control", json={"action": "EMERGENCY_STOP"})
+    assert stopped.status_code == 200 and stopped.json()["mode"] == "STOPPED"
+    with Session(create_engine(database)) as session:
+        assert session.get(GrowthJob, "pending-stop-test").state == "BLOCKED"
+    assert c.get(result["videoUrl"]).status_code == 409
+
+
 def test_restart_exact_retry_conflict_and_refund_revocation(database):
     c = client(database)
     assert c.post("/v1/experiments", json=experiment()).json()["duplicate"] is False

@@ -87,3 +87,9 @@ class GrowthLearning(Base):
     rationale:Mapped[str]=mapped_column(Text,nullable=False)
     next_mutation_json:Mapped[str]=mapped_column(Text,nullable=False)
     created_at:Mapped[datetime]=mapped_column(DateTime(timezone=True),nullable=False)
+
+class GrowthControl(Base):
+    __tablename__="growth_control"
+    control_id:Mapped[str]=mapped_column(String(20),primary_key=True)
+    mode:Mapped[str]=mapped_column(String(20),nullable=False,default="READY")
+    updated_at:Mapped[datetime]=mapped_column(DateTime(timezone=True),nullable=False)
