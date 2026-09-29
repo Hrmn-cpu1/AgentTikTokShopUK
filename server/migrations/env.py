@@ -10,6 +10,7 @@ from server.models import Base
 from server import growth_models
 from server import growth_queue_models  # register growth tables with metadata
 from server import action_effect_models  # register contracts, effects, outbox and evidence
+from server import delivery_models  # register durable delivery identities
 
 config = context.config
 url = os.environ.get("DATABASE_URL")
