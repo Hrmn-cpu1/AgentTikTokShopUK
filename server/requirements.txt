@@ -9,3 +9,4 @@ httpx==0.28.1
 cryptography==46.0.5
 Pillow==11.3.0
 python-multipart==0.0.20
+piper-tts==1.8.0
