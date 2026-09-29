@@ -169,8 +169,6 @@ def _motion_frame(plate, index, local_frame, frames_in_scene, phrase, label, acc
     text_height = bbox[3] - bbox[1]
     draw.multiline_text((55, panel_top + 78 + max(0, (152 - text_height) // 2)), wrapped,
                         font=main, spacing=15, fill=(255, 255, 255, 255))
-    footer = ImageFont.truetype(FONT, 16)
-    draw.text((36, 886), "SINAL: GOOGLE TRENDS BR  ·  TIKTOK: UNKNOWN", font=footer, fill=(238, 244, 250, 220))
     return frame
 
 
@@ -256,7 +254,7 @@ def render_growth_plan(plan_json: str, output_dir: str | Path | None = None,
         backgrounds[0].resize((WIDTH, HEIGHT), Image.Resampling.LANCZOS).save(thumbnail, "JPEG", quality=90)
         digest = hashlib.sha256(output.read_bytes()).hexdigest()
         manifest = {
-            "rendererVersion": "2.0.0", "format": "mp4", "videoCodec": "h264", "audioCodec": "aac",
+            "rendererVersion": "2.1.0", "format": "mp4", "videoCodec": "h264", "audioCodec": "aac",
             "audioDescription": "Portuguese narration plus original low-volume tone bed" if voice_path else "synthetic tone bed; narration unavailable in this runtime",
             "narrationGenerated": bool(voice_path), "narrationLanguage": "pt-BR", "width": WIDTH,
             "height": HEIGHT, "aspectRatio": "9:16", "durationSeconds": round(duration_total, 2), "fps": FPS,

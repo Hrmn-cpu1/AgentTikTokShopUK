@@ -31,7 +31,7 @@ The selected OSS patterns are the staged pipeline in [GabrielLaxy/TikTokAIVideoG
 
 V2 uses locally generated vector art rather than downloaded footage: five scene plates, animated crop/pan/zoom, short timed phrases, scene transitions, an original audio bed, local `espeak-ng` pt-BR narration, H.264/AAC output, SRT sidecar, thumbnail and a hash-bound manifest. The Docker image and Backend CI install `espeak-ng`. No owner-selected photo, stock clip or copyrighted sound is required. If a runtime lacks speech synthesis, the manifest reports narration unavailable rather than claiming it exists.
 
-The hook is capped at two seconds. Scene phrases are the captions; long paragraphs are not rendered. The source watermark in the video says Google Trends BR and TikTok metrics UNKNOWN, so a Google search signal cannot be mistaken for TikTok virality.
+The hook is capped at two seconds. Scene phrases are the captions; long paragraphs are not rendered. Source provenance stays in the manifest and experiment evidence UI rather than a persistent on-video technical footer.
 
 ## Publishing route comparison
 

@@ -26,7 +26,7 @@ def test_growth_plan_renders_vertical_mp4_audio_captions_manifest_and_thumbnail(
         manifest = json.loads((tmp_path / "manifest.json").read_text())
         assert manifest["aspectRatio"] == "9:16" and manifest["sha256"] == digest
         assert manifest["sourceEvidence"]["source"] == "PUBLIC_FIXTURE"
-        assert manifest["rendererVersion"] == "2.0.0"
+        assert manifest["rendererVersion"] == "2.1.0"
         assert manifest["sceneCount"] == 3 and manifest["sceneTransitions"] == 2
         assert manifest["animatedCropZoom"] and manifest["humanChosenPhotoUsed"] is False
         assert manifest["narrationGenerated"] == bool(__import__("shutil").which("espeak-ng"))

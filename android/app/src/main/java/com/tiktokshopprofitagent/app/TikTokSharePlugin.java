@@ -8,6 +8,7 @@ import android.util.Base64;
 import androidx.core.content.FileProvider;
 import com.getcapacitor.Plugin;
 import com.getcapacitor.PluginCall;
+import com.getcapacitor.JSObject;
 import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.CapacitorPlugin;
 import java.io.File;
@@ -59,7 +60,9 @@ public class TikTokSharePlugin extends Plugin {
             send.setPackage(tiktokPackage);
             try {
                 getActivity().startActivity(send);
-                call.resolve();
+                JSObject result = new JSObject();
+                result.put("state", "TIKTOK_INTENT_STARTED");
+                call.resolve(result);
                 return;
             } catch (ActivityNotFoundException ignored) {
                 send.setPackage(null);
@@ -67,7 +70,9 @@ public class TikTokSharePlugin extends Plugin {
         }
         try {
             getActivity().startActivity(Intent.createChooser(send, "Compartilhar vídeo"));
-            call.resolve();
+            JSObject result = new JSObject();
+            result.put("state", "SHARE_CHOOSER_OPENED");
+            call.resolve(result);
         } catch (ActivityNotFoundException error) {
             call.reject("Nenhum aplicativo disponível para compartilhar vídeo");
         }
