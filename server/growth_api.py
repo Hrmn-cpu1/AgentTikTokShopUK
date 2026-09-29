@@ -425,6 +425,121 @@ def add_growth_routes(app, engine, require_operator, trend_source=None, media_st
                     "observedAt": o.observed_at.isoformat(), "views": o.views, "likes": o.likes,
                     "comments": o.comments, "shares": o.shares} for o in observations]}
 
+    @app.post("/v1/growth/creatives/{creative_id}/materialize", dependencies=[Depends(require_operator)])
+    def materialize_durable_media(creative_id: str):
+        """Queue one auditable, idempotent render for a legacy READY creative; never publish."""
+        if media_store is None:
+            raise HTTPException(503, "Durable media storage is not configured")
+        artifact_to_verify = None
+        artifact_job_type = None
+        with Session(engine) as session:
+            control = session.scalar(select(GrowthControl).where(
+                GrowthControl.control_id == "default").with_for_update())
+            if control is None or control.mode != "ACTION_REQUIRED":
+                raise HTTPException(409, "Durable materialization requires ACTION_REQUIRED control mode")
+            creative = session.scalar(select(GrowthCreative).where(
+                GrowthCreative.creative_id == creative_id).with_for_update())
+            if creative is None:
+                raise HTTPException(404, "Unknown creative")
+            idempotency_key = creative_id + ":MATERIALIZE_DURABLE_MEDIA"
+            existing_job = session.scalar(select(GrowthJob).where(
+                GrowthJob.idempotency_key == idempotency_key))
+            if existing_job and existing_job.state in {"PENDING", "RUNNING", "RETRY"}:
+                if creative.state not in {"READY", "RENDERING"}:
+                    raise HTTPException(409, "Active materialization job conflicts with creative state")
+                return {"creativeId": creative_id, "experimentId": creative.experiment_id,
+                    "jobId": existing_job.job_id, "jobType": existing_job.job_type,
+                    "jobState": existing_job.state, "duplicate": True,
+                    "mediaState": "MATERIALIZATION_PENDING", "delivery": "UNCHANGED_NOT_CONFIRMED"}
+
+            if creative.state != "READY":
+                raise HTTPException(409, "Only a READY creative can be durably materialized")
+
+            artifacts = session.scalars(select(GrowthMediaArtifact).where(
+                GrowthMediaArtifact.creative_id == creative_id).order_by(
+                    GrowthMediaArtifact.created_at.desc())).all()
+            if artifacts:
+                verified = [artifact for artifact in artifacts if
+                    artifact.quality_status == "QUALITY_PASS" and artifact.storage_state == "STORED_VERIFIED"]
+                if len(artifacts) != 1 or len(verified) != 1:
+                    raise HTTPException(409, "Existing artifact history needs integrity review; no rerender was queued")
+                artifact_to_verify = verified[0]
+                artifact_job = session.get(GrowthJob, artifact_to_verify.render_job_id)
+                artifact_job_type = artifact_job.job_type if artifact_job else "UNKNOWN"
+            else:
+                try:
+                    media_store.preflight()
+                except MediaStorageError as exc:
+                    raise HTTPException(503, f"Durable media storage unavailable: {type(exc).__name__}") from None
+
+                jobs = session.scalars(select(GrowthJob).where(
+                    GrowthJob.creative_id == creative_id,
+                    GrowthJob.job_type.in_(("RENDER_VIDEO", "PREPARE_ASSETS"))
+                ).order_by(GrowthJob.created_at.desc())).all()
+                active = next((job for job in jobs if job.state in {"PENDING", "RUNNING", "RETRY"}), None)
+                if active:
+                    raise HTTPException(409, "An existing render job is active; no concurrent render was queued")
+                if existing_job:
+                    raise HTTPException(409,
+                        f"Materialization job is terminal ({existing_job.state}); no rerender was queued")
+                try:
+                    job = enqueue_job(session, creative_id, "MATERIALIZE_DURABLE_MEDIA")
+                    record_transition(session, creative.state, creative.state,
+                        "operator requested durable media materialization; TikTok delivery was not invoked",
+                        creative.experiment_id, job.job_id)
+                    session.commit()
+                except IntegrityError:
+                    session.rollback()
+                    existing = session.scalar(select(GrowthJob).where(
+                        GrowthJob.creative_id == creative_id,
+                        GrowthJob.idempotency_key == creative_id + ":MATERIALIZE_DURABLE_MEDIA"))
+                    if existing is None:
+                        raise HTTPException(409, "Concurrent materialization request conflicted; retry safely") from None
+                    return {"creativeId": creative_id, "experimentId": creative.experiment_id,
+                        "jobId": existing.job_id, "jobType": existing.job_type, "jobState": existing.state,
+                        "duplicate": True,
+                        "mediaState": "MATERIALIZATION_PENDING" if existing.state in {"PENDING", "RUNNING", "RETRY"}
+                            else "MATERIALIZATION_ACCEPTED",
+                        "delivery": "UNCHANGED_NOT_CONFIRMED"}
+                return {"creativeId": creative_id, "experimentId": creative.experiment_id,
+                    "jobId": job.job_id, "jobType": job.job_type, "jobState": job.state,
+                    "duplicate": False, "mediaState": "MATERIALIZATION_PENDING",
+                    "delivery": "UNCHANGED_NOT_CONFIRMED"}
+
+        try:
+            readback = media_store.verify_object(artifact_to_verify.object_key,
+                expected_sha256=artifact_to_verify.sha256,
+                expected_size_bytes=artifact_to_verify.size_bytes,
+                expected_content_type=artifact_to_verify.content_type)
+        except MediaArtifactMissing:
+            with Session(engine) as session:
+                row = session.get(GrowthMediaArtifact, artifact_to_verify.artifact_id)
+                if row:
+                    row.storage_state = "ARTIFACT_MISSING"
+                    row.failure_reason = "materialization idempotency readback found no canonical object"
+                    session.commit()
+            raise HTTPException(503, "Existing durable media artifact is missing; no rerender was queued") from None
+        except MediaArtifactCorrupt:
+            with Session(engine) as session:
+                row = session.get(GrowthMediaArtifact, artifact_to_verify.artifact_id)
+                if row:
+                    row.storage_state = "ARTIFACT_CORRUPT"
+                    row.failure_reason = "materialization idempotency readback failed integrity verification"
+                    session.commit()
+            raise HTTPException(503, "Existing durable media artifact is corrupt; no rerender was queued") from None
+        except MediaStorageError:
+            raise HTTPException(503, "Durable media storage is unavailable") from None
+        return {"creativeId": artifact_to_verify.creative_id,
+            "experimentId": artifact_to_verify.experiment_id,
+            "jobId": artifact_to_verify.render_job_id,
+            "jobType": artifact_job_type, "jobState": "SUCCEEDED",
+            "duplicate": True, "artifactId": artifact_to_verify.artifact_id,
+            "objectKey": artifact_to_verify.object_key, "sha256": readback.sha256,
+            "sizeBytes": readback.size_bytes, "qualityStatus": artifact_to_verify.quality_status,
+            "storageState": artifact_to_verify.storage_state, "mediaState": "MEDIA_READY",
+            "videoUrl": f"/v1/growth/creatives/{artifact_to_verify.creative_id}/video",
+            "delivery": "UNCHANGED_NOT_CONFIRMED"}
+
     @app.post("/v1/growth/run", dependencies=[Depends(require_operator)])
     def run_first_experiment():
         """Discover current public BR signals, select deterministically and create one original plan."""

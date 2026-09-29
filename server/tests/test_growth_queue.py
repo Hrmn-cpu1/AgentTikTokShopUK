@@ -94,6 +94,20 @@ def test_render_jobs_are_not_claimed_without_durable_storage(tmp_path):
         assert session.get(GrowthJob, job.job_id).state == "PENDING"
 
 
+def test_durable_materialization_stays_queued_without_volume_in_action_required(tmp_path):
+    engine, creative_id = queue_db(tmp_path)
+    now = utcnow()
+    with Session(engine) as session:
+        session.get(GrowthControl, "default").mode = "ACTION_REQUIRED"
+        job = GrowthJob(job_id="needs-volume-materialize", creative_id=creative_id,
+            job_type="MATERIALIZE_DURABLE_MEDIA", idempotency_key="needs-volume-materialize",
+            state="PENDING", attempts=0, available_at=now, created_at=now, updated_at=now)
+        session.add(job)
+        session.commit()
+        assert claim_due_job(session, "worker-without-volume", media_storage_available=False) is None
+        assert session.get(GrowthJob, job.job_id).state == "PENDING"
+
+
 def test_worker_advances_real_render_and_stops_at_action_required(tmp_path):
     engine, creative_id = queue_db(tmp_path)
     with Session(engine) as session:
@@ -152,10 +166,10 @@ def test_restart_reconciles_same_artifact_without_rerender(tmp_path, monkeypatch
         creative.plan_json = canonical_plan(build_creative_plan(TrendCandidate(
             topic=trend.topic, source=trend.source, source_ref=trend.source_ref,
             evidence=trend.evidence, metrics={}), "curiosidades"))
-        creative.state = "ASSETS_PENDING"
-        session.get(GrowthControl, "default").mode = "RUNNING"
+        creative.state = "READY"
+        session.get(GrowthControl, "default").mode = "ACTION_REQUIRED"
         render = GrowthJob(job_id="restart-render-job", creative_id=creative_id,
-            job_type="RENDER_VIDEO", idempotency_key="restart-render-job", state="RUNNING",
+            job_type="MATERIALIZE_DURABLE_MEDIA", idempotency_key="restart-render-job", state="RUNNING",
             attempts=1, available_at=utcnow(), lease_owner="old-worker",
             lease_until=utcnow()+timedelta(minutes=1), created_at=utcnow(), updated_at=utcnow())
         session.add(render)
@@ -163,7 +177,8 @@ def test_restart_reconciles_same_artifact_without_rerender(tmp_path, monkeypatch
         assert worker.finish_internal_job(session, render, media_store=store) == "SUCCEEDED"
         artifact = session.scalar(select(GrowthMediaArtifact).where(
             GrowthMediaArtifact.render_job_id == render.job_id))
-        original_identity = (artifact.artifact_id, artifact.sha256)
+        original_identity = (artifact.artifact_id, artifact.sha256, artifact.size_bytes,
+            artifact.object_key, artifact.source_render_attempt)
         final_path = store.object_path(artifact.object_key)
         preserved_bytes = final_path.read_bytes()
         final_path.unlink()
@@ -173,7 +188,7 @@ def test_restart_reconciles_same_artifact_without_rerender(tmp_path, monkeypatch
         render.state = "RUNNING"
         render.attempts = 2
         creative.state = "RENDERING"
-        session.get(GrowthControl, "default").mode = "RUNNING"
+        session.get(GrowthControl, "default").mode = "ACTION_REQUIRED"
         session.commit()
 
         def forbidden_rerender(*args, **kwargs):
@@ -181,8 +196,31 @@ def test_restart_reconciles_same_artifact_without_rerender(tmp_path, monkeypatch
         monkeypatch.setattr(worker, "render_growth_plan", forbidden_rerender)
         assert worker.finish_internal_job(session, render, media_store=store) == "SUCCEEDED"
         session.refresh(artifact)
-        assert (artifact.artifact_id, artifact.sha256) == original_identity
+        assert (artifact.artifact_id, artifact.sha256, artifact.size_bytes,
+            artifact.object_key, artifact.source_render_attempt) == original_identity
         assert artifact.storage_state == "STORED_VERIFIED"
         restored = store.verify_object(artifact.object_key, expected_sha256=artifact.sha256,
                                        expected_size_bytes=artifact.size_bytes)
         assert restored.path.read_bytes() == preserved_bytes
+
+
+def test_action_required_materialization_lease_expiry_reuses_same_job(tmp_path):
+    engine, creative_id = queue_db(tmp_path)
+    now = utcnow()
+    with Session(engine) as session:
+        session.get(GrowthControl, "default").mode = "ACTION_REQUIRED"
+        job = GrowthJob(job_id="materialize-lease-job", creative_id=creative_id,
+            job_type="MATERIALIZE_DURABLE_MEDIA", idempotency_key="materialize-lease-key",
+            state="PENDING", attempts=0, available_at=now, created_at=now, updated_at=now)
+        session.add(job)
+        session.commit()
+        first = claim_due_job(session, "first-worker")
+        assert first is not None and first.job_id == job.job_id and first.attempts == 1
+        first.lease_until = utcnow() - timedelta(seconds=1)
+        session.commit()
+        recovered = claim_due_job(session, "replacement-worker")
+        assert recovered is not None and recovered.job_id == first.job_id
+        assert recovered.attempts == 2
+        assert recovered.lease_owner == "replacement-worker"
+        assert session.scalar(select(GrowthJob.idempotency_key).where(
+            GrowthJob.job_type == "MATERIALIZE_DURABLE_MEDIA")) == "materialize-lease-key"

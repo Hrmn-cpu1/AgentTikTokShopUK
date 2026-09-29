@@ -43,13 +43,20 @@ def seed_scripted_creatives(session: Session):
 
 def claim_due_job(session: Session, worker_id: str, *, media_storage_available: bool = True):
     control = session.get(GrowthControl, "default")
-    if control is not None and control.mode not in {"READY", "RUNNING"}:
+    mode = control.mode if control is not None else "READY"
+    if mode not in {"READY", "RUNNING", "ACTION_REQUIRED"}:
         return None
     now = utcnow()
     query = select(GrowthJob).where(
         ((GrowthJob.state.in_(("PENDING", "RETRY"))) | ((GrowthJob.state == "RUNNING") & (GrowthJob.lease_until < now))), GrowthJob.available_at <= now)
+    # ACTION_REQUIRED remains latched for the earlier delivery. Only the explicit,
+    # no-publication media materialization job may run through that gate.
+    if mode == "ACTION_REQUIRED":
+        query = query.where(GrowthJob.job_type == "MATERIALIZE_DURABLE_MEDIA")
+    else:
+        query = query.where(GrowthJob.job_type != "MATERIALIZE_DURABLE_MEDIA")
     if not media_storage_available:
-        query = query.where(GrowthJob.job_type != "RENDER_VIDEO")
+        query = query.where(GrowthJob.job_type.notin_(("RENDER_VIDEO", "MATERIALIZE_DURABLE_MEDIA")))
     job = session.scalar(query
         .order_by(GrowthJob.available_at).with_for_update(skip_locked=True).limit(1))
     if not job:
@@ -181,7 +188,9 @@ def _persist_render_artifact(session: Session, job: GrowthJob, creative: GrowthC
 
 def finish_internal_job(session: Session, job: GrowthJob, *, media_store: RailwayVolumeMediaStore | None = None):
     control = session.get(GrowthControl, "default")
-    if control is not None and control.mode not in {"READY", "RUNNING"}:
+    is_action_required_materialization = (job.job_type == "MATERIALIZE_DURABLE_MEDIA"
+        and control is not None and control.mode == "ACTION_REQUIRED")
+    if control is not None and control.mode not in {"READY", "RUNNING"} and not is_action_required_materialization:
         job.state = "BLOCKED" if control.mode == "STOPPED" else "PENDING"
         job.available_at = utcnow()
         job.last_error = "Cancelled at safe checkpoint: " + control.mode
@@ -202,7 +211,9 @@ def finish_internal_job(session: Session, job: GrowthJob, *, media_store: Railwa
         enqueue_job(session, creative.creative_id, "RENDER_VIDEO")
         job.state = "SUCCEEDED"
         job.last_error = None
-    elif job.job_type == "RENDER_VIDEO" and creative.state in {"ASSETS_PENDING", "RENDERING", "BLOCKED"}:
+    elif ((job.job_type == "RENDER_VIDEO" and
+            creative.state in {"ASSETS_PENDING", "RENDERING", "BLOCKED"}) or
+          (job.job_type == "MATERIALIZE_DURABLE_MEDIA" and creative.state in {"READY", "RENDERING"})):
         if media_store is None:
             job.state = "PENDING"
             job.available_at = utcnow() + timedelta(minutes=5)
@@ -319,7 +330,8 @@ def finish_internal_job(session: Session, job: GrowthJob, *, media_store: Railwa
         def cancelled():
             session.expire_all()
             current = session.get(GrowthControl, "default")
-            return current is not None and current.mode not in {"READY", "RUNNING"}
+            return current is not None and current.mode not in {"READY", "RUNNING"} and not (
+                job.job_type == "MATERIALIZE_DURABLE_MEDIA" and current.mode == "ACTION_REQUIRED")
         try:
             output, digest, _cleanup = render_growth_plan(creative.plan_json, output_dir=output_dir,
                                                           should_cancel=cancelled)
@@ -348,7 +360,7 @@ def finish_internal_job(session: Session, job: GrowthJob, *, media_store: Railwa
                 source_state = creative.state
                 creative.state = "FAILED"
                 control = session.get(GrowthControl, "default")
-                if control:
+                if control and control.mode in {"READY", "RUNNING"}:
                     old = control.mode
                     control.mode = "BLOCKED"
                     control.updated_at = utcnow()
