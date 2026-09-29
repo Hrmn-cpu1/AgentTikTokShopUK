@@ -20,7 +20,8 @@ from sqlalchemy.orm import Session
 from .delivery_models import DeliveryEffect
 from .growth_brain import (TrendCandidate, build_creative_plan, canonical_plan,
     choose_hook_family, choose_niche)
-from .growth_models import (FollowerSnapshot, GrowthControl, GrowthCreative, GrowthLearning,
+from .creative_research import derive_creative_dna
+from .growth_models import (FollowerSnapshot, GrowthControl, GrowthCreative, GrowthCreativeDNA, GrowthLearning,
     GrowthObservation, GrowthSchedulerTick, NicheHypothesis, TrendSignal)
 from .growth_queue_models import GrowthJob
 from .growth_runtime import QuotaExceeded, quota_snapshot, reserve_quota, scheduler_enabled
@@ -263,8 +264,24 @@ def run_growth_cycle(engine, source, *, trigger: str = "MANUAL") -> dict:
             except (TypeError, ValueError):
                 hook_counts["question"] += 1
 
+        recent_learning_rows = session.scalars(select(GrowthLearning).order_by(
+            GrowthLearning.created_at.desc()).limit(24)).all()
+        research_learnings = []
+        for row in recent_learning_rows:
+            try:
+                next_mutation = json.loads(row.next_mutation_json)
+            except (TypeError, ValueError):
+                next_mutation = {}
+            research_learnings.append({
+                "learningId": row.learning_id,
+                "verdict": row.verdict,
+                "rationale": row.rationale,
+                "nextMutation": next_mutation,
+            })
+        creative_dna = derive_creative_dna(research_learnings)
+
         learning, mutation = _unused_learning_mutation(session)
-        learned_hook = mutation.get("to") if mutation else None
+        learned_hook = mutation.get("to") if mutation else creative_dna.get("patterns", {}).get("hook", {}).get("familyHint")
         if learned_hook:
             hook_family = str(learned_hook)
             learning_id = learning.learning_id
@@ -274,14 +291,14 @@ def run_growth_cycle(engine, source, *, trigger: str = "MANUAL") -> dict:
             learning_id = None
             mutation_mode = "DETERMINISTIC_EXPLORATION"
 
-        plan = build_creative_plan(candidate, niche_name, hook_family)
+        plan = build_creative_plan(candidate, niche_name, hook_family, creative_dna=creative_dna)
         plan["sourceEvidence"].update({
             "geography": chosen.geography,
             "collectedAt": chosen.collected_at.isoformat(),
             "observedAt": chosen.observed_at.isoformat(),
             "rankingComponents": chosen_score["components"],
             "rankingScore": chosen_score["score"],
-            "selectionReason": "highest reproducible fresh BR public-search score; TikTok engagement is UNKNOWN",
+            "selectionReason": "fresh BR public-search signal selected for topic; creative form learned from public official BR references and own eligible results when available; TikTok organic engagement remains UNKNOWN",
             "hookFamily": hook_family,
             "hookSelection": mutation_mode,
         })
@@ -318,6 +335,17 @@ def run_growth_cycle(engine, source, *, trigger: str = "MANUAL") -> dict:
         )
         session.add(creative)
         session.flush()
+        dna_row = GrowthCreativeDNA(
+            dna_id=str(uuid4()),
+            creative_id=creative_id,
+            source_priority=creative_dna["sourcePriority"],
+            references_json=json.dumps(creative_dna["publicReferences"], ensure_ascii=False, sort_keys=True),
+            patterns_json=json.dumps(creative_dna["patterns"], ensure_ascii=False, sort_keys=True),
+            evidence_digest=creative_dna["evidenceDigest"],
+            created_at=now,
+        )
+        session.add(dna_row)
+        session.flush()
         try:
             reserve_quota(session, event_type="EXPERIMENT",
                           idempotency_key="experiment:" + creative_id,
@@ -352,6 +380,8 @@ def run_growth_cycle(engine, source, *, trigger: str = "MANUAL") -> dict:
             "videoUrl": f"/v1/growth/creatives/{creative_id}/video",
             "trigger": trigger,
             "learningApplied": learning_id,
+            "creativeDNAId": dna_row.dna_id,
+            "creativeDNA": creative_dna,
             "delivery": {"status": "NOT_SENT", "publication": "UNKNOWN"},
         }
 
