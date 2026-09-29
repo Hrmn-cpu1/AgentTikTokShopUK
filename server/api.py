@@ -29,6 +29,7 @@ from .video_studio import render_creator_video
 from .growth_api import add_growth_routes
 from .growth_worker import run_growth_worker
 from .media_storage import MediaStorageError, RailwayVolumeMediaStore
+from .delivery_api import add_delivery_routes
 
 
 Money = Decimal
@@ -121,6 +122,7 @@ def create_app(database_url: str | None = None, operator_token: str | None = Non
 
     add_governance_routes(app, engine, require_operator, require_manual_authority)
     add_growth_routes(app, engine, require_operator, trend_source=trend_source, media_store=media_store)
+    add_delivery_routes(app, engine, require_operator)
 
     # The DB queue is durable; this single in-process poller only executes leased jobs.
     worker_stop = threading.Event()

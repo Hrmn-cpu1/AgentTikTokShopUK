@@ -622,3 +622,77 @@ def test_provider_lab_without_reference_uses_exact_observation_match_without_inv
         assert effect.provider_reference is None
         evidence = session.get(EffectEvidence, effect.confirmation_evidence_id)
         assert evidence.source_reference == f"provider-lab://effect/{action.effect_id}"
+
+
+# Delivery gateway regression tests reuse the authoritative action_db fixture so
+# media, lease and hash invariants stay identical to the Effect Ledger tests.
+from pathlib import Path
+
+from server.delivery_gateway import prepare_android_handoff_from_render, record_android_handoff
+
+
+def test_android_handoff_delivery_is_frozen_under_render_lease_and_records_evidence(tmp_path):
+    engine, _store, ids = action_db(tmp_path, name="delivery-handoff")
+    with Session(engine) as session:
+        creative = session.get(GrowthCreative, ids["creative_id"])
+        artifact = session.get(GrowthMediaArtifact, ids["artifact_id"])
+        job = session.get(GrowthJob, ids["job_id"])
+        delivery = prepare_android_handoff_from_render(
+            session, job=job, creative=creative, artifact=artifact)
+        session.commit()
+        first_id = delivery.delivery_id
+
+    with Session(engine) as session:
+        creative = session.get(GrowthCreative, ids["creative_id"])
+        artifact = session.get(GrowthMediaArtifact, ids["artifact_id"])
+        job = session.get(GrowthJob, ids["job_id"])
+        duplicate = prepare_android_handoff_from_render(
+            session, job=job, creative=creative, artifact=artifact)
+        assert duplicate.delivery_id == first_id
+        assert duplicate.action_contract_id
+        assert duplicate.effect_id
+        delivery, evidence = record_android_handoff(
+            session, delivery_id=first_id, artifact_sha256=ids["sha256"], observed_at=utcnow())
+        session.commit()
+        assert delivery.state == "HANDOFF_INITIATED"
+        assert evidence.classification == "SYSTEM_OBSERVED"
+        assert evidence.evidence_type == "SYSTEM_OBSERVED_HANDOFF"
+        assert session.get(EffectLedger, delivery.effect_id).state == "PREPARED"
+
+
+def test_android_handoff_rejects_hash_and_quality_mismatch(tmp_path):
+    engine, _store, ids = action_db(tmp_path, name="delivery-reject")
+    with Session(engine) as session:
+        creative = session.get(GrowthCreative, ids["creative_id"])
+        artifact = session.get(GrowthMediaArtifact, ids["artifact_id"])
+        job = session.get(GrowthJob, ids["job_id"])
+        delivery = prepare_android_handoff_from_render(
+            session, job=job, creative=creative, artifact=artifact)
+        session.commit()
+        with pytest.raises(ValueError, match="observed bytes"):
+            record_android_handoff(
+                session, delivery_id=delivery.delivery_id, artifact_sha256="0" * 64,
+                observed_at=utcnow())
+        session.rollback()
+        artifact = session.get(GrowthMediaArtifact, ids["artifact_id"])
+        artifact.quality_status = "QUALITY_REVIEW"
+        session.flush()
+        with pytest.raises(ValueError, match="verified quality artifact"):
+            prepare_android_handoff_from_render(
+                session, job=session.get(GrowthJob, ids["job_id"]),
+                creative=session.get(GrowthCreative, ids["creative_id"]), artifact=artifact)
+
+
+def test_android_fileprovider_is_confined_to_dedicated_share_cache():
+    root = Path(__file__).resolve().parents[2]
+    xml = (root / "android/app/src/main/res/xml/file_paths.xml").read_text(encoding="utf-8")
+    java = (root / "android/app/src/main/java/com/tiktokshopprofitagent/app/TikTokSharePlugin.java").read_text(
+        encoding="utf-8")
+    assert "<external-path" not in xml
+    assert 'path="."' not in xml
+    assert '<cache-path name="tiktok_share_cache" path="share/" />' in xml
+    assert 'new File(getContext().getCacheDir(), "share")' in java
+    assert 'new File(shareDir, "agent-tiktok-share.mp4")' in java
+    assert 'MessageDigest.getInstance("SHA-256")' in java
+    assert "FLAG_GRANT_READ_URI_PERMISSION" in java
+    assert "FLAG_GRANT_WRITE_URI_PERMISSION" not in java

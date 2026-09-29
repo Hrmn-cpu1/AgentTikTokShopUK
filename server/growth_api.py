@@ -23,6 +23,7 @@ from .growth_queue_models import GrowthJob
 from .growth_worker import enqueue_job, record_transition
 from .growth_learning import eligible_for_comparison, compare_hook_families
 from .models import TikTokConnection
+from .delivery_models import DeliveryEffect
 from .trend_sources import GoogleTrendsBrazilRSS, rank_public_signal
 from .media_storage import (MediaArtifactCorrupt, MediaArtifactMissing,
     MediaStorageError, MediaStorageNotConfigured, RailwayVolumeMediaStore)
@@ -314,6 +315,11 @@ def add_growth_routes(app, engine, require_operator, trend_source=None, media_st
             artifacts_by_creative = {}
             for artifact in artifacts:
                 artifacts_by_creative.setdefault(artifact.creative_id, artifact)
+            deliveries = session.scalars(select(DeliveryEffect).order_by(
+                DeliveryEffect.created_at.desc())).all()
+            deliveries_by_creative = {}
+            for delivery in deliveries:
+                deliveries_by_creative.setdefault(delivery.creative_id, delivery)
             creatives_by_id = {item.creative_id: item for item in creatives}
             latest_observations = {}
             for item in observations:
@@ -331,6 +337,7 @@ def add_growth_routes(app, engine, require_operator, trend_source=None, media_st
                 trend = session.get(TrendSignal, creative.trend_id)
                 observation = latest_observations.get(creative.creative_id)
                 intent = intents_by_creative.get(creative.creative_id)
+                delivery = deliveries_by_creative.get(creative.creative_id)
                 learning = learning_by_creative.get(creative.creative_id)
                 metrics = json.loads(trend.metrics_json) if trend else {}
                 evidence = plan.get("sourceEvidence", {})
@@ -341,8 +348,14 @@ def add_growth_routes(app, engine, require_operator, trend_source=None, media_st
                     "evidence": trend.evidence if trend else "UNKNOWN", "rankingScore": evidence.get("rankingScore"),
                     "rankingComponents": evidence.get("rankingComponents"), "selectionReason": evidence.get("selectionReason"),
                     "metrics": metrics, "plan": plan,
-                    "delivery": {"state": intent.provider_status if intent else "NOT_REQUESTED",
-                        "provider": intent.provider if intent else None, "providerId": intent.provider_publish_id if intent else None},
+                    "delivery": {"state": delivery.state if delivery else
+                            (intent.provider_status if intent else "NOT_REQUESTED"),
+                        "provider": delivery.provider if delivery else (intent.provider if intent else None),
+                        "providerId": delivery.provider_reference if delivery else
+                            (intent.provider_publish_id if intent else None),
+                        "deliveryId": delivery.delivery_id if delivery else None,
+                        "actionContractId": delivery.action_contract_id if delivery else None,
+                        "effectId": delivery.effect_id if delivery else None},
                     "quality": {"status": creative.quality_status, "details": json.loads(creative.quality_json)},
                     "purpose": creative.purpose, "creativeLearningEligible": creative.creative_learning_eligible,
                     "styleBaselineEligible": creative.style_baseline_eligible,
@@ -363,6 +376,10 @@ def add_growth_routes(app, engine, require_operator, trend_source=None, media_st
                         "storageState": artifact.storage_state if artifact else "UNKNOWN",
                         "mediaReady": bool(artifact and artifact.storage_state == "STORED_VERIFIED"
                                            and artifact.quality_status == "QUALITY_PASS"),
+                        "deliveryId": delivery.delivery_id if delivery else None,
+                        "deliveryState": delivery.state if delivery else "NOT_PREPARED",
+                        "actionContractId": delivery.action_contract_id if delivery else None,
+                        "effectId": delivery.effect_id if delivery else None,
                         "createdAt": creative.created_at.isoformat(), "videoUrl": f"/v1/growth/creatives/{creative.creative_id}/video"})
             observations_count = total_observations
             follower_snapshot = followers[0] if followers else None
