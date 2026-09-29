@@ -14,6 +14,8 @@ from .action_effects import record_effect_evidence
 from .delivery_models import DeliveryEffect
 from .growth_models import GrowthCreative, GrowthMediaArtifact, NicheHypothesis
 from .growth_queue_models import GrowthJob
+from .growth_models import GrowthQuotaEvent
+from .growth_runtime import QuotaExceeded, reserve_quota
 
 
 ANDROID_TARGET = "ANDROID_SHARE_HANDOFF"
@@ -64,6 +66,8 @@ def _validate_delivery_binding(session: Session, delivery: DeliveryEffect):
         raise ValueError("delivery requires a STORED_VERIFIED / QUALITY_PASS artifact")
     if creative.state != "READY" or creative.quality_status != "QUALITY_PASS":
         raise ValueError("delivery requires a READY / QUALITY_PASS creative")
+    if creative.policy_status != "POLICY_PASS":
+        raise ValueError("delivery requires the Brazil originality/policy gate to pass")
     if _PROVIDER_FOR_TARGET.get(delivery.target) != delivery.provider:
         raise RuntimeError("delivery provider does not match target")
     return contract, effect, artifact, creative
@@ -234,6 +238,29 @@ def prepare_android_handoff_from_render(
     return delivery
 
 
+
+def reserve_android_handoff(session: Session, *, delivery_id: str):
+    """Reserve one daily handoff slot before Android opens the external share surface."""
+    delivery = session.scalar(select(DeliveryEffect).where(
+        DeliveryEffect.delivery_id == delivery_id).with_for_update())
+    if delivery is None:
+        raise KeyError(delivery_id)
+    if delivery.target != ANDROID_TARGET or delivery.provider != "ANDROID_SHARE":
+        raise ValueError("delivery is not an Android share handoff")
+    _validate_delivery_binding(session, delivery)
+    if delivery.state not in {"PREPARED", "HANDOFF_INITIATED"}:
+        raise ValueError(f"handoff cannot be reserved from delivery state {delivery.state}")
+    event = reserve_quota(
+        session,
+        event_type="HANDOFF",
+        idempotency_key=f"handoff:{delivery.delivery_id}",
+        creative_id=delivery.creative_id,
+        delivery_id=delivery.delivery_id,
+        occurred_at=utcnow(),
+    )
+    return delivery, event
+
+
 def record_android_handoff(
     session: Session,
     *,
@@ -252,6 +279,14 @@ def record_android_handoff(
     if delivery.target != ANDROID_TARGET or delivery.provider != "ANDROID_SHARE":
         raise ValueError("delivery is not an Android share handoff")
     _contract, effect, _artifact, _creative = _validate_delivery_binding(session, delivery)
+    # Backward-compatible idempotent reservation; current Android clients reserve before intent start.
+    try:
+        reserve_quota(session, event_type="HANDOFF",
+            idempotency_key=f"handoff:{delivery.delivery_id}",
+            creative_id=delivery.creative_id, delivery_id=delivery.delivery_id,
+            occurred_at=observed)
+    except QuotaExceeded as exc:
+        raise ValueError(str(exc)) from None
     if artifact_sha256 != delivery.artifact_sha256:
         raise ValueError("Android-observed bytes do not match the frozen artifact hash")
     if delivery.state not in {"PREPARED", "HANDOFF_INITIATED"}:
