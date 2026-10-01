@@ -71,6 +71,9 @@ def test_hybrid_provider_uses_cloud_only_for_hook_and_preserves_quality_contract
     assert manifest["videoProvider"]["strategy"] == "HYBRID_CLOUD_HOOK_LOCAL_TAIL"
     assert manifest["videoProvider"]["taskId"] == "fake-task"
     assert manifest["videoProvider"]["estimatedCostUsd"] == 0.32
+    assert manifest["videoProvider"]["nativeAudioUsed"] is False
+    assert manifest["hookDurationSeconds"] <= 2.5
+    assert manifest["cloudHookClipSeconds"] >= 3.9
     assert manifest["assetProvenance"]["thirdPartyClipReuse"] is False
     assert manifest["tts"]["provider"] == "PIPER_LOCAL_NEURAL"
     assert manifest["qualityGate"]["checks"]["production_tts"]["passed"] is True
