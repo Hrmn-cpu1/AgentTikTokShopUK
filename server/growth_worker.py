@@ -10,7 +10,7 @@ from sqlalchemy import select, update, event, func
 from sqlalchemy.orm import Session
 from .growth_models import GrowthControl, GrowthCreative, GrowthMediaArtifact, GrowthStateTransition
 from .growth_queue_models import GrowthJob, utcnow
-from .growth_renderer import render_growth_plan
+from .hybrid_video_renderer import render_growth_plan_with_selected_provider
 from .media_storage import (MediaArtifactCorrupt, MediaArtifactMissing, MediaQuotaExceeded,
     MediaStorageError, MediaStorageNotConfigured, RailwayVolumeMediaStore, artifact_object_key, hash_file)
 from . import delivery_models  # register delivery table without importing the gateway
@@ -512,8 +512,8 @@ def _finish_internal_job(session: Session, job: GrowthJob, *, media_store: Railw
             return current is not None and current.mode not in {"READY", "RUNNING"} and not (
                 job.job_type == "MATERIALIZE_DURABLE_MEDIA" and current.mode == "ACTION_REQUIRED")
         try:
-            output, digest, _cleanup = render_growth_plan(creative.plan_json, output_dir=output_dir,
-                                                          should_cancel=cancelled)
+            output, digest, _cleanup = render_growth_plan_with_selected_provider(
+                creative.plan_json, output_dir=output_dir, should_cancel=cancelled)
         except InterruptedError:
             # Cancellation is a terminal render decision; the partial, invalid render is disposable.
             media_store.cleanup_staging(staging_key)
