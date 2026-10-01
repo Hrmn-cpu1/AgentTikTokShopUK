@@ -12,7 +12,6 @@ import json
 import os
 import re
 import shutil
-import socket
 import subprocess
 from urllib.parse import urlparse
 
@@ -64,6 +63,7 @@ def _download_https(url: str, destination: Path, max_bytes: int = _MAX_CLOUD_DOW
     with httpx.Client(timeout=60.0, follow_redirects=True) as client:
         with client.stream("GET", safe_url) as response:
             response.raise_for_status()
+            _safe_provider_url(str(response.url))
             total = 0
             with destination.open("wb") as output:
                 for chunk in response.iter_bytes(1024 * 1024):
@@ -102,7 +102,7 @@ def _normalize_hook(source: Path, output: Path, hook_text: str) -> float:
     drawtext = (
         f"drawtext=fontfile='{_escape_filter_path(Path(FONT_BOLD))}':"
         f"textfile='{_escape_filter_path(caption)}':"
-        "fontcolor=white:fontsize=42:line_spacing=10:"
+        "fontcolor=white:fontsize=42:line_spacing=10:expansion=none:"
         "box=1:boxcolor=black@0.58:boxborderw=20:"
         "x=(w-text_w)/2:y=h*0.70"
     )
@@ -240,6 +240,9 @@ def render_growth_plan_with_selected_provider(
         _concat(normalized_hook, tail, output)
         final_probe = _probe(output)
         duration_total = final_probe["duration"]
+        video_duration = float(final_probe["video"].get("duration") or duration_total)
+        audio_duration = float(final_probe["audio"].get("duration") or duration_total)
+        av_delta = abs(video_duration - audio_duration)
 
         captions = directory / "captions.pt-BR.srt"
         caption_count = _shift_captions(
@@ -279,7 +282,7 @@ def render_growth_plan_with_selected_provider(
             "thumbnail": thumbnail.name,
             "sha256": digest,
             "blankFrameCheck": blank_check,
-            "audioVideoDurationMismatchSeconds": 0.0,
+            "audioVideoDurationMismatchSeconds": round(av_delta, 3),
             "audioDescription": "MiniMax H3 native hook audio plus Piper neural pt-BR narration for local tail",
             "videoProvider": {
                 "strategy": "HYBRID_CLOUD_HOOK_LOCAL_TAIL",
