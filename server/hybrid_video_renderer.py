@@ -96,9 +96,12 @@ def _escape_filter_path(path: Path) -> str:
     return str(path).replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'")
 
 
-def _normalize_hook(source: Path, output: Path, hook_text: str) -> float:
+def _normalize_hook(source: Path, local_video: Path, output: Path, hook_text: str,
+                    spoken_hook_seconds: float) -> float:
+    """Use H3 for visuals only; preserve the verified Piper hook audio contract."""
     caption = output.parent / "h3-hook-caption.txt"
     caption.write_text(hook_text.strip(), encoding="utf-8")
+    source_duration = _probe(source)["duration"]
     drawtext = (
         f"drawtext=fontfile='{_escape_filter_path(Path(FONT_BOLD))}':"
         f"textfile='{_escape_filter_path(caption)}':"
@@ -107,15 +110,17 @@ def _normalize_hook(source: Path, output: Path, hook_text: str) -> float:
         "x=(w-text_w)/2:y=h*0.70"
     )
     vf = (
-        f"scale={WIDTH}:{HEIGHT}:force_original_aspect_ratio=increase,"
-        f"crop={WIDTH}:{HEIGHT},fps={FPS},{drawtext},format=yuv420p"
+        f"[0:v]scale={WIDTH}:{HEIGHT}:force_original_aspect_ratio=increase,"
+        f"crop={WIDTH}:{HEIGHT},fps={FPS},{drawtext},format=yuv420p[v];"
+        f"[1:a]atrim=0:{spoken_hook_seconds:.3f},apad,"
+        f"atrim=0:{source_duration:.3f},aresample=44100[a]"
     )
     subprocess.run([
-        "ffmpeg", "-nostdin", "-loglevel", "error", "-i", str(source),
-        "-vf", vf, "-af", "aresample=44100",
+        "ffmpeg", "-nostdin", "-loglevel", "error", "-i", str(source), "-i", str(local_video),
+        "-filter_complex", vf, "-map", "[v]", "-map", "[a]",
         "-c:v", "libx264", "-preset", "veryfast", "-crf", "21",
-        "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart",
-        "-y", str(output),
+        "-c:a", "aac", "-b:a", "128k", "-t", f"{source_duration:.3f}",
+        "-movflags", "+faststart", "-y", str(output),
     ], capture_output=True, timeout=180, check=True)
     return _probe(output)["duration"]
 
@@ -172,11 +177,11 @@ def _build_h3_prompt(plan: dict) -> str:
     first = scenes[0] if scenes and isinstance(scenes[0], dict) else {}
     visual = str(first.get("visual") or first.get("visualLabel") or topic).strip()
     return (
-        "Vertical 9:16 Brazilian TikTok opening hook. Create an ORIGINAL, premium, fast-paced "
-        "cinematic shot with native audio, no logos, no watermark, no copied creator likeness. "
-        f"Topic: {topic}. Visual direction: {visual}. Spoken Brazilian Portuguese hook: {hook}. "
+        "Vertical 9:16 Brazilian TikTok opening visual. Create an ORIGINAL, premium, fast-paced "
+        "cinematic shot, no logos, no watermark, no copied creator likeness. "
+        f"Topic: {topic}. Hook meaning: {hook}. Visual direction: {visual}. "
         "The first second must create curiosity; keep visual motion continuous and readable on a phone. "
-        "Do not add extra on-screen text because captions will be composited later."
+        "Do not add on-screen text. Audio is not relied on because verified pt-BR narration is composited later."
     )
 
 
@@ -231,7 +236,9 @@ def render_growth_plan_with_selected_provider(
         raw_hook = directory / "h3-hook-source.mp4"
         fetcher(result.output_url, raw_hook, _MAX_CLOUD_DOWNLOAD)
         normalized_hook = directory / "h3-hook.mp4"
-        cloud_hook_seconds = _normalize_hook(raw_hook, normalized_hook, str(plan.get("hook") or ""))
+        cloud_hook_seconds = _normalize_hook(
+            raw_hook, local_output, normalized_hook, str(plan.get("hook") or ""), local_hook_seconds
+        )
 
         tail = directory / "local-tail.mp4"
         _render_tail(local_output, tail, local_hook_seconds)
@@ -275,7 +282,8 @@ def render_growth_plan_with_selected_provider(
             "videoCodec": str(final_probe["video"].get("codec_name") or "h264"),
             "audioCodec": str(final_probe["audio"].get("codec_name") or "aac"),
             "durationSeconds": round(duration_total, 2),
-            "hookDurationSeconds": round(cloud_hook_seconds, 2),
+            "hookDurationSeconds": round(local_hook_seconds, 2),
+            "cloudHookClipSeconds": round(cloud_hook_seconds, 2),
             "captionFile": captions.name,
             "captionBlockCount": caption_count,
             "captionsBurnedIn": True,
@@ -283,7 +291,7 @@ def render_growth_plan_with_selected_provider(
             "sha256": digest,
             "blankFrameCheck": blank_check,
             "audioVideoDurationMismatchSeconds": round(av_delta, 3),
-            "audioDescription": "MiniMax H3 native hook audio plus Piper neural pt-BR narration for local tail",
+            "audioDescription": "Piper neural pt-BR narration throughout; MiniMax H3 supplies hook visuals only",
             "videoProvider": {
                 "strategy": "HYBRID_CLOUD_HOOK_LOCAL_TAIL",
                 "provider": result.provider,
@@ -292,6 +300,8 @@ def render_growth_plan_with_selected_provider(
                 "resolution": result.resolution,
                 "ratio": result.ratio,
                 "cloudHookSeconds": round(cloud_hook_seconds, 2),
+                "spokenHookSeconds": round(local_hook_seconds, 2),
+                "nativeAudioUsed": False,
                 "estimatedCostUsd": result.estimated_cost_usd,
                 "outputStoredLocally": True,
             },
