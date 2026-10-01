@@ -26,6 +26,7 @@ from .growth_learning import eligible_for_comparison, compare_hook_families
 from .growth_cycle import (CycleBlocked, run_growth_cycle, run_growth_scheduler,
     run_scheduler_tick)
 from .growth_runtime import quota_snapshot, scheduler_enabled
+from .video_providers import video_provider_readiness
 from .delivery_gateway import record_owner_publication_report
 from .models import TikTokConnection
 from .delivery_models import DeliveryEffect
@@ -120,6 +121,11 @@ def add_growth_routes(app, engine, require_operator, trend_source=None, media_st
             scheduler_stop.set()
             if scheduler_thread and scheduler_thread.is_alive():
                 scheduler_thread.join(timeout=5)
+
+    @app.get("/v1/growth/video-providers", dependencies=[Depends(require_operator)])
+    def growth_video_providers():
+        """Expose provider readiness without disclosing server-side credentials."""
+        return video_provider_readiness()
 
     @app.get("/v1/growth/observation-capabilities", dependencies=[Depends(require_operator)])
     def observation_capabilities():

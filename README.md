@@ -90,3 +90,19 @@ Once the owner creates and links the Blueprint in their Render account, verify t
 For TikTok identity, create/register an app in [TikTok for Developers](https://developers.tiktok.com/), add [Login Kit for Web](https://developers.tiktok.com/docs/en/login-kit-web), register the **exact** redirect `https://YOUR-ACTUAL-RENDER-HOST/v1/tiktok/callback`, and request `user.info.basic`. Set `TIKTOK_CLIENT_KEY`, `TIKTOK_CLIENT_SECRET` and `TIKTOK_REDIRECT_URI` directly in Render environment settings, never in GitHub or Android. Re-deploy after adding them; `/ready` reports `tiktokAuthorizationConfigured`. OAuth goes to TikTok's official browser page, the backend exchanges the code, and the Android return link carries no token or code. TikTok Shop/Affiliate and commerce access need separate real evidence; manual verified workflows are available without those APIs after a real identity connects.
 
 Manual commerce path in Operate: record a real UK listing and evidence, operator-approved capital limits and opportunity, freeze a uniquely identified experiment, record claim provenance and creative content, obtain human approval, create an immutable manual launch intent, publish outside the app, then observe the real video/order/delivery/settlement/refund/cost references. The server validates trace and recomputes economics. A synthetic E2E is engineering proof only. **No real TikTok login, real settlement, physical APK installation or bank payout has been observed here.**
+
+
+## Cloud video providers (AgentTube study)
+
+The Android app is an operator surface, not a GPU workstation. Heavy video inference must run on a cloud provider or a server-side service. The phone never receives provider API secrets.
+
+Current provider policy:
+
+- `VIDEO_PROVIDER=local` keeps the existing procedural/Piper path and requires no GPU.
+- `VIDEO_PROVIDER=minimax_h3` selects the MiniMax H3 cloud contract. Set `MINIMAX_API_KEY` only on the backend runtime.
+- H3 defaults to `768P` and `9:16` for TikTok economics. 2K is reserved for an approved keeper/final export.
+- H3 generation is asynchronous: create task -> poll task -> obtain HTTPS MP4 URL.
+- Provider failures, missing keys and malformed responses fail closed; the Android client never performs inference and never stores the provider key.
+- `GET /v1/growth/video-providers` reports operator-safe readiness/capabilities without exposing secrets.
+
+This provider layer is the first AgentTube-derived transplant. It is intentionally isolated from the existing renderer until cloud output is reconciled into the media/effect ledger with the same provenance and quality guarantees as local renders.
