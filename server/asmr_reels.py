@@ -153,6 +153,7 @@ def render_asmr_reel(spec: dict, output_dir: str | Path) -> dict:
     logger.info("asmr_render_start creative=%s clips=%d width=%d", creative_id, len(clips), width)
     segments: list[Path] = []
     frame_total = 0
+    edit_decisions: list[dict[str, object]] = []
     try:
         for index, (source, start, seconds, _) in enumerate(clips_checked):
             count = round(seconds * FPS)
@@ -182,10 +183,18 @@ def render_asmr_reel(spec: dict, output_dir: str | Path) -> dict:
                 raise ValueError(f"segment frame or format mismatch at index {index}")
             frame_total += count
             segments.append(segment)
+            edit_decisions.append({
+                "sourceSha256": clips_checked[index][3]["sha256"],
+                "inSeconds": start, "requestedSeconds": seconds,
+                "outputFrames": count, "outputSeconds": count / FPS,
+            })
 
         target_duration = frame_total / FPS
         if not 6 <= target_duration <= 60.01:
             raise ValueError("frame-quantized reel duration outside 6-60s")
+        # The frame boundary may exceed the requested fractional duration.
+        if audio[1] + target_duration > float(_probe(audio[0])["format"]["duration"]) + 0.005:
+            raise ValueError("audio too short after frame-quantized edit")
         list_file = target / "segments.ffconcat"
         list_file.write_text(
             "\n".join(f"file '{path.name}'" for path in segments) + "\n", encoding="utf-8"
@@ -243,13 +252,17 @@ def render_asmr_reel(spec: dict, output_dir: str | Path) -> dict:
             str(final_video), "-frames:v", "1", "-q:v", "2", "-y", str(thumbnail)
         ], timeout=40)
         manifest = {
-            "rendererVersion": "asmr-1.0.0-local", "creativeId": creative_id,
+            "rendererVersion": "asmr-1.1.0-sequential", "creativeId": creative_id,
             "format": "mp4", "width": width, "height": height, "aspectRatio": "9:16",
             "fps": FPS, "durationSeconds": round(duration, 3), "sceneCount": len(clips),
             "videoCodec": "h264", "audioCodec": "aac", "audioSource": "REAL_OPERATOR_SUPPLIED",
             "narrationGenerated": False, "cloudProviderUsed": False,
             "costPolicy": "NO_PAID_PROVIDERS", "sha256": digest, "sizeBytes": size,
             "thumbnail": thumbnail.name, "audioPeakDbFS": peak,
+            "pipeline": "SEQUENTIAL_H264_ENCODE_CONCAT_STREAM_COPY",
+            "editDecisionList": edit_decisions,
+            "audioInSeconds": audio[1],
+            "creativeIntent": spec.get("intent", "UNSPECIFIED_REQUIRES_EDITORIAL_REVIEW"),
             "sourceEvidence": {"clips": [c[3] for c in clips_checked], "audio": audio[3]},
             "qualityGate": {"status": "TECHNICAL_PASS", "checks": checks,
                             "rights": "SELF_DECLARED_PENDING_HUMAN_VERIFICATION",
