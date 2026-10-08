@@ -10,6 +10,7 @@ import argparse
 import json
 import logging
 import math
+from fractions import Fraction
 import re
 import shutil
 import subprocess
@@ -299,6 +300,7 @@ def render_asmr_reel(spec: dict, output_dir: str | Path) -> dict:
             "ffmpeg", "-nostdin", "-loglevel", "error", "-ss", "0.3",
             "-protocol_whitelist", "file", "-i", str(final_video), "-frames:v", "1", "-q:v", "2", "-y", str(thumbnail)
         ], timeout=40)
+        thumbnail_sha, thumbnail_bytes = hash_file(thumbnail)
         manifest = {
             "rendererVersion": "asmr-1.2.0-r128-frame-verified", "creativeId": creative_id,
             "format": "mp4", "width": width, "height": height, "aspectRatio": "9:16",
@@ -306,7 +308,9 @@ def render_asmr_reel(spec: dict, output_dir: str | Path) -> dict:
             "videoCodec": "h264", "audioCodec": "aac", "audioSource": "REAL_OPERATOR_SUPPLIED",
             "narrationGenerated": False, "cloudProviderUsed": False,
             "costPolicy": "NO_PAID_PROVIDERS", "sha256": digest, "sizeBytes": size,
-            "thumbnail": thumbnail.name, "audioPeakDbFS": peak,
+            "thumbnail": thumbnail.name,
+            "thumbnailSha256": thumbnail_sha, "thumbnailSizeBytes": thumbnail_bytes,
+            "audioPeakDbFS": peak,
             "decodedFrameCount": decoded_frames,
             "audioVideoDurationMismatchSeconds": round(av_delta, 6),
             "audioAnalysis": r128,
@@ -328,6 +332,7 @@ def render_asmr_reel(spec: dict, output_dir: str | Path) -> dict:
         manifest_temp.replace(manifest_file)
         for intermediate in (*segments, list_file, combined_video):
             intermediate.unlink()
+        verify_asmr_draft(target)  # independent readback; no promotion/publish
         logger.info("asmr_render_verified creative=%s bytes=%d sha256=%s", creative_id, size, digest)
         return manifest
     except BaseException:
@@ -337,6 +342,122 @@ def render_asmr_reel(spec: dict, output_dir: str | Path) -> dict:
         except OSError:
             logger.exception("ASMR draft cleanup failed: %s", target)
         raise
+
+
+
+class AsmrDraftIntegrityError(ValueError):
+    """A review-only draft is missing, incomplete or inconsistent; never serve it."""
+
+
+def verify_asmr_draft(output_dir: str | Path) -> dict[str, object]:
+    """Fail-closed local readback, not a digital signature or editorial release gate.
+
+    Operates on a trusted local directory. Refuses drafts without a complete
+    manifest, matching video/thumbnail hashes, codec/geometry/frame integrity,
+    aligned audio, and strictly blocked human approval gates.
+    """
+    root = Path(output_dir)
+    if root.is_symlink() or not root.is_dir():
+        raise AsmrDraftIntegrityError("draft path is missing or symlinked")
+    manifest_file, video_file, thumbnail = (
+        root / "manifest.json", root / "reel.mp4", root / "thumbnail.jpg"
+    )
+    for item in (manifest_file, video_file, thumbnail):
+        if item.is_symlink() or not item.is_file():
+            raise AsmrDraftIntegrityError(f"draft asset missing or unsafe: {item.name}")
+    if (any(root.glob("segment_*.mp4")) or (root / "combined_video.mp4").exists()
+            or (root / ".reel-incomplete.mp4").exists()
+            or (root / ".manifest-incomplete.json").exists()):
+        raise AsmrDraftIntegrityError("incomplete ASMR intermediate files remain")
+    try:
+        if not 0 < manifest_file.stat().st_size <= 262_144:
+            raise AsmrDraftIntegrityError("manifest size is invalid")
+        manifest = json.loads(manifest_file.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise AsmrDraftIntegrityError("manifest cannot be read") from exc
+    if not isinstance(manifest, dict):
+        raise AsmrDraftIntegrityError("manifest must be an object")
+    gate = manifest.get("qualityGate")
+    if (not isinstance(gate, dict) or gate.get("status") != "TECHNICAL_PASS"
+            or gate.get("rights") != "SELF_DECLARED_PENDING_HUMAN_VERIFICATION"
+            or gate.get("editorial") != "PENDING_HUMAN_REVIEW"
+            or gate.get("publication") != "BLOCKED"):
+        raise AsmrDraftIntegrityError("draft approval gate is unsafe")
+    required = {
+        "vertical_h264", "real_audio_aac", "duration", "no_prolonged_black",
+        "non_clipping_audio", "decoded_frame_count", "audio_video_sync",
+        "true_peak_headroom",
+    }
+    checks = gate.get("checks")
+    if not isinstance(checks, dict) or any(checks.get(k) is not True for k in required):
+        raise AsmrDraftIntegrityError("technical QA checks are incomplete")
+    if (manifest.get("rendererVersion") != "asmr-1.2.0-r128-frame-verified"
+            or manifest.get("storageState") != "LOCAL_DRAFT_NOT_DURABLY_PROMOTED"):
+        raise AsmrDraftIntegrityError("unsupported manifest version or storage gate")
+    for item, sha_key, size_key in (
+        (video_file, "sha256", "sizeBytes"),
+        (thumbnail, "thumbnailSha256", "thumbnailSizeBytes"),
+    ):
+        expected_sha, expected_size = manifest.get(sha_key), manifest.get(size_key)
+        if (not isinstance(expected_sha, str)
+                or re.fullmatch(r"[a-f0-9]{64}", expected_sha) is None
+                or type(expected_size) is not int
+                or not 0 < expected_size <= MAX_SOURCE_BYTES):
+            raise AsmrDraftIntegrityError(f"invalid integrity metadata: {item.name}")
+        actual_sha, actual_size = hash_file(item)
+        if actual_sha != expected_sha or actual_size != expected_size:
+            raise AsmrDraftIntegrityError(f"SHA-256/size mismatch: {item.name}")
+    probe = _probe(video_file)
+    streams = probe.get("streams") or []
+    video_streams = [st for st in streams if st.get("codec_type") == "video"]
+    audio_streams = [st for st in streams if st.get("codec_type") == "audio"]
+    if len(video_streams) != 1 or len(audio_streams) != 1:
+        raise AsmrDraftIntegrityError("expected one video and one audio stream")
+    video, audio = video_streams[0], audio_streams[0]
+    width, height = manifest.get("width"), manifest.get("height")
+    if (type(width) is not int or width not in (540, 1080)
+            or type(height) is not int or height != width * 16 // 9
+            or (video.get("width"), video.get("height")) != (width, height)
+            or video.get("codec_name") != "h264"
+            or audio.get("codec_name") != "aac"):
+        raise AsmrDraftIntegrityError("actual codec/geometry disagrees with manifest")
+    try:
+        rate = Fraction(video.get("avg_frame_rate", "0/0"))
+    except (ValueError, TypeError, ZeroDivisionError) as exc:
+        raise AsmrDraftIntegrityError("invalid video frame rate") from exc
+    if rate != FPS:
+        raise AsmrDraftIntegrityError("video does not have expected 24fps")
+    edits = manifest.get("editDecisionList")
+    if (not isinstance(edits, list) or not 1 <= len(edits) <= MAX_CLIPS
+            or len(edits) != manifest.get("sceneCount")):
+        raise AsmrDraftIntegrityError("invalid edit decision list")
+    expected_frames = 0
+    for edit in edits:
+        count = edit.get("outputFrames") if isinstance(edit, dict) else None
+        if type(count) is not int or not 1 <= count <= 1440:
+            raise AsmrDraftIntegrityError("invalid frames in edit decision")
+        expected_frames += count
+    decoded = _decode_frame_count(video_file)
+    if decoded != expected_frames or decoded != manifest.get("decodedFrameCount"):
+        raise AsmrDraftIntegrityError("decoded frames disagree with edit plan")
+    duration = float(probe["format"]["duration"])
+    seconds = decoded / FPS
+    if (not 6 <= seconds <= 60.01 or abs(duration - seconds) > 0.25
+            or abs(duration - float(manifest.get("durationSeconds", -1))) > 0.05):
+        raise AsmrDraftIntegrityError("duration mismatch")
+    video_seconds = float(video.get("duration") or duration)
+    audio_seconds = float(audio.get("duration") or duration)
+    if abs(video_seconds - audio_seconds) > 0.25:
+        raise AsmrDraftIntegrityError("audio/video duration mismatch")
+    return {
+        "creativeId": manifest.get("creativeId"),
+        "videoSha256": manifest["sha256"],
+        "thumbnailSha256": manifest["thumbnailSha256"],
+        "decodedFrames": decoded,
+        "durationSeconds": duration,
+        "integrity": "LOCAL_TECHNICAL_READBACK_PASS",
+        "publication": "BLOCKED",
+    }
 
 
 def main() -> None:
