@@ -48,7 +48,13 @@ def test_renders_real_audio_vertical_mp4_with_hash_and_nonpublication_gate(tmp_p
     assert hash_file(video) == (manifest["sha256"], manifest["sizeBytes"])
     assert (manifest["width"], manifest["height"], manifest["aspectRatio"]) == (540, 960, "9:16")
     assert manifest["sceneCount"] == 2
-    assert manifest["rendererVersion"] == "asmr-1.1.0-sequential"
+    assert manifest["rendererVersion"] == "asmr-1.2.0-r128-frame-verified"
+    assert manifest["decodedFrameCount"] == 144
+    assert manifest["audioVideoDurationMismatchSeconds"] <= 0.25
+    assert manifest["audioAnalysis"]["truePeakDbFS"] <= -1.0
+    assert manifest["qualityGate"]["checks"]["decoded_frame_count"] is True
+    assert manifest["qualityGate"]["checks"]["audio_video_sync"] is True
+    assert manifest["qualityGate"]["checks"]["true_peak_headroom"] is True
     assert manifest["pipeline"] == "SEQUENTIAL_H264_ENCODE_CONCAT_STREAM_COPY"
     assert [x["outputFrames"] for x in manifest["editDecisionList"]] == [72, 72]
     assert manifest["creativeIntent"] == "UNSPECIFIED_REQUIRES_EDITORIAL_REVIEW"
@@ -165,3 +171,14 @@ def test_concurrent_same_destination_has_exactly_one_winner(tmp_path, asmr_asset
     assert sum(item is not None for item in outcomes) == 1
     assert json.loads((output / "manifest.json").read_text())["qualityGate"]["publication"] == "BLOCKED"
     assert (output / "reel.mp4").is_file()
+
+
+@pytest.mark.skipif(not shutil.which("ffmpeg") or not shutil.which("ffprobe"),
+                    reason="FFmpeg required")
+def test_frame_count_mismatch_blocks_export_and_cleans_directory(tmp_path, asmr_assets, monkeypatch):
+    import server.asmr_reels as module
+    monkeypatch.setattr(module, "_decode_frame_count", lambda _: 5)
+    output = tmp_path / "bad-frames"
+    with pytest.raises(ValueError, match="decoded_frame_count"):
+        render_asmr_reel(asmr_assets, output)
+    assert not output.exists()
