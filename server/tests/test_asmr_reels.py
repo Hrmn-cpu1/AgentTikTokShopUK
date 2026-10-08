@@ -88,6 +88,74 @@ def test_fails_closed_for_short_audio_or_overwrite(tmp_path, asmr_assets):
     output = tmp_path / "output"
     output.mkdir()
     (output / "keep.txt").write_text("do not erase")
-    with pytest.raises(ValueError, match="must be empty"):
+    with pytest.raises(ValueError, match="must not exist"):
         render_asmr_reel(asmr_assets, output)
     assert (output / "keep.txt").read_text() == "do not erase"
+
+def test_rejects_nonfinite_timestamps_and_playlist(tmp_path, asmr_assets):
+    asmr_assets["clips"][0]["start"] = float("nan")
+    with pytest.raises(ValueError, match="safe limits"):
+        render_asmr_reel(asmr_assets, tmp_path / "invalid")
+    asmr_assets["clips"][0]["start"] = 0
+    asmr_assets["clips"][0]["path"] = str(tmp_path / "playlist.m3u8")
+    (tmp_path / "playlist.m3u8").write_text("#EXTM3U\n")
+    with pytest.raises(ValueError, match="unsupported local media"):
+        render_asmr_reel(asmr_assets, tmp_path / "invalid")
+
+
+def test_failed_encode_cleans_partial_directory(tmp_path, asmr_assets, monkeypatch):
+    import server.asmr_reels as module
+    actual_run = module._run
+
+    def fail_encoding(cmd, timeout=240):
+        if "-filter_complex" in cmd:
+            raise RuntimeError("synthetic encoder interruption")
+        return actual_run(cmd, timeout)
+
+    monkeypatch.setattr(module, "_run", fail_encoding)
+    output = tmp_path / "failed"
+    with pytest.raises(RuntimeError, match="interruption"):
+        render_asmr_reel(asmr_assets, output)
+    assert not output.exists(), "Failed drafts must not leave plausible artifacts"
+
+
+@pytest.mark.skipif(not shutil.which("ffmpeg") or not shutil.which("ffprobe"),
+                    reason="FFmpeg required")
+def test_mutating_media_during_render_fails_closed(tmp_path, asmr_assets, monkeypatch):
+    import server.asmr_reels as module
+    actual_run = module._run
+    changed = False
+
+    def mutate_after_encode(cmd, timeout=240):
+        nonlocal changed
+        result = actual_run(cmd, timeout)
+        if not changed and "-filter_complex" in cmd:
+            changed = True
+            with open(asmr_assets["clips"][0]["path"], "ab") as stream:
+                stream.write(b"source-was-changed")
+        return result
+
+    monkeypatch.setattr(module, "_run", mutate_after_encode)
+    output = tmp_path / "changed-source"
+    with pytest.raises(RuntimeError, match="source changed"):
+        render_asmr_reel(asmr_assets, output)
+    assert not output.exists()
+
+
+@pytest.mark.skipif(not shutil.which("ffmpeg") or not shutil.which("ffprobe"),
+                    reason="FFmpeg required")
+def test_concurrent_same_destination_has_exactly_one_winner(tmp_path, asmr_assets):
+    from concurrent.futures import ThreadPoolExecutor
+    output = tmp_path / "exclusive"
+
+    def run_attempt():
+        try:
+            return render_asmr_reel(asmr_assets, output)
+        except (ValueError, FileExistsError):
+            return None
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        outcomes = list(pool.map(lambda _: run_attempt(), range(2)))
+    assert sum(item is not None for item in outcomes) == 1
+    assert json.loads((output / "manifest.json").read_text())["qualityGate"]["publication"] == "BLOCKED"
+    assert (output / "reel.mp4").is_file()
