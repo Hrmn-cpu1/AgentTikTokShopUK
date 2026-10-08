@@ -5,7 +5,7 @@ import subprocess
 
 import pytest
 
-from server.asmr_reels import render_asmr_reel
+from server.asmr_reels import AsmrDraftIntegrityError, render_asmr_reel, verify_asmr_draft
 from server.media_storage import hash_file
 
 
@@ -46,6 +46,10 @@ def test_renders_real_audio_vertical_mp4_with_hash_and_nonpublication_gate(tmp_p
     assert (target / "thumbnail.jpg").is_file()
     assert json.loads((target / "manifest.json").read_text()) == manifest
     assert hash_file(video) == (manifest["sha256"], manifest["sizeBytes"])
+    assert hash_file(target / "thumbnail.jpg") == (
+        manifest["thumbnailSha256"], manifest["thumbnailSizeBytes"]
+    )
+    assert verify_asmr_draft(target)["integrity"] == "LOCAL_TECHNICAL_READBACK_PASS"
     assert (manifest["width"], manifest["height"], manifest["aspectRatio"]) == (540, 960, "9:16")
     assert manifest["sceneCount"] == 2
     assert manifest["rendererVersion"] == "asmr-1.2.0-r128-frame-verified"
@@ -182,3 +186,62 @@ def test_frame_count_mismatch_blocks_export_and_cleans_directory(tmp_path, asmr_
     with pytest.raises(ValueError, match="decoded_frame_count"):
         render_asmr_reel(asmr_assets, output)
     assert not output.exists()
+
+
+
+@pytest.mark.skipif(not shutil.which("ffmpeg") or not shutil.which("ffprobe"),
+                    reason="FFmpeg required")
+def test_independent_readback_fails_closed_on_artifact_corruption(tmp_path, asmr_assets):
+    output = tmp_path / "review-draft"
+    manifest = render_asmr_reel(asmr_assets, output)
+    for filename in ("reel.mp4", "thumbnail.jpg"):
+        target = output / filename
+        original = target.read_bytes()
+        with target.open("ab") as stream:
+            stream.write(b"unauthorized-change")
+        with pytest.raises(AsmrDraftIntegrityError, match="SHA-256"):
+            verify_asmr_draft(output)
+        target.write_bytes(original)
+    verified = verify_asmr_draft(output)
+    assert verified["videoSha256"] == manifest["sha256"]
+    assert verified["publication"] == "BLOCKED"
+
+
+@pytest.mark.skipif(not shutil.which("ffmpeg") or not shutil.which("ffprobe"),
+                    reason="FFmpeg required")
+def test_readback_rejects_manifest_tampering_and_crash_orphans(tmp_path, asmr_assets):
+    output = tmp_path / "review-draft"
+    render_asmr_reel(asmr_assets, output)
+    manifest = output / "manifest.json"
+    source = manifest.read_bytes()
+    data = json.loads(source)
+    data["qualityGate"]["publication"] = "APPROVED"
+    manifest.write_text(json.dumps(data), encoding="utf-8")
+    with pytest.raises(AsmrDraftIntegrityError, match="approval gate"):
+        verify_asmr_draft(output)
+    manifest.write_bytes(source)
+    (output / "segment_99.mp4").write_bytes(b"partial-job")
+    with pytest.raises(AsmrDraftIntegrityError, match="intermediate"):
+        verify_asmr_draft(output)
+    (output / "segment_99.mp4").unlink()
+    data = json.loads(source)
+    data["editDecisionList"][0]["outputFrames"] = 8
+    manifest.write_text(json.dumps(data), encoding="utf-8")
+    with pytest.raises(AsmrDraftIntegrityError, match="decoded frames"):
+        verify_asmr_draft(output)
+    manifest.write_bytes(source)
+    assert verify_asmr_draft(output)["decodedFrames"] == 144
+
+
+@pytest.mark.skipif(not shutil.which("ffmpeg") or not shutil.which("ffprobe"),
+                    reason="FFmpeg required")
+def test_readback_rejects_missing_manifest_and_directory_symlink(tmp_path, asmr_assets):
+    output = tmp_path / "review-draft"
+    render_asmr_reel(asmr_assets, output)
+    symlink = tmp_path / "link-to-review-draft"
+    symlink.symlink_to(output, target_is_directory=True)
+    with pytest.raises(AsmrDraftIntegrityError, match="symlink"):
+        verify_asmr_draft(symlink)
+    (output / "manifest.json").unlink()
+    with pytest.raises(AsmrDraftIntegrityError, match="missing"):
+        verify_asmr_draft(output)
