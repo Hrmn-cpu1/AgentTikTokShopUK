@@ -45,7 +45,7 @@ def _run(command: list[str], timeout: int = 240) -> subprocess.CompletedProcess[
 
 def _probe(path: Path) -> dict:
     payload = json.loads(_run([
-        "ffprobe", "-v", "error", "-show_streams", "-show_format", "-of", "json", str(path)
+        "ffprobe", "-v", "error", "-protocol_whitelist", "file", "-show_streams", "-show_format", "-of", "json", str(path)
     ], timeout=30).stdout)
     if not payload.get("format", {}).get("duration"):
         raise ValueError(f"media duration unavailable: {path.name}")
@@ -97,7 +97,7 @@ def _asset(raw: dict, media_type: str) -> tuple[Path, float, float, dict]:
 
 def _scan_black(path: Path) -> bool:
     result = _run([
-        "ffmpeg", "-nostdin", "-hide_banner", "-i", str(path),
+        "ffmpeg", "-nostdin", "-hide_banner", "-protocol_whitelist", "file", "-i", str(path),
         "-vf", "blackdetect=d=0.5:pix_th=0.025:pic_th=0.98",
         "-an", "-f", "null", "-"
     ], timeout=90)
@@ -106,7 +106,7 @@ def _scan_black(path: Path) -> bool:
 
 def _audio_peak(path: Path) -> float | None:
     result = _run([
-        "ffmpeg", "-nostdin", "-hide_banner", "-i", str(path),
+        "ffmpeg", "-nostdin", "-hide_banner", "-protocol_whitelist", "file", "-i", str(path),
         "-vn", "-af", "volumedetect", "-f", "null", "-"
     ], timeout=90)
     values = re.findall(r"max_volume:\s*(-?[\d.]+|-inf)\s*dB", result.stderr)
@@ -167,7 +167,7 @@ def render_asmr_reel(spec: dict, output_dir: str | Path) -> dict:
             )
             _run([
                 "ffmpeg", "-nostdin", "-loglevel", "error",
-                "-i", str(source), "-map", "0:v:0", "-vf", scene_filter,
+                "-protocol_whitelist", "file", "-i", str(source), "-map", "0:v:0", "-vf", scene_filter,
                 "-an", "-frames:v", str(count), "-map_metadata", "-1", "-map_chapters", "-1",
                 "-c:v", "libx264", "-threads", "2", "-preset", "veryfast",
                 "-crf", "23", "-pix_fmt", "yuv420p", "-video_track_timescale", "12288",
@@ -202,7 +202,7 @@ def render_asmr_reel(spec: dict, output_dir: str | Path) -> dict:
         combined_video = target / "combined_video.mp4"
         _run([
             "ffmpeg", "-nostdin", "-loglevel", "error",
-            "-f", "concat", "-safe", "1", "-i", str(list_file),
+            "-f", "concat", "-safe", "1", "-protocol_whitelist", "file", "-i", str(list_file),
             "-map", "0:v:0", "-c:v", "copy", "-an",
             "-map_metadata", "-1", "-map_chapters", "-1",
             "-movflags", "+faststart", "-n", str(combined_video),
@@ -214,7 +214,8 @@ def render_asmr_reel(spec: dict, output_dir: str | Path) -> dict:
         )
         _run([
             "ffmpeg", "-nostdin", "-loglevel", "error",
-            "-i", str(combined_video), "-i", str(audio[0]),
+            "-protocol_whitelist", "file", "-i", str(combined_video),
+            "-protocol_whitelist", "file", "-i", str(audio[0]),
             "-filter_complex", audio_filter, "-map", "0:v:0", "-map", "[a]",
             "-map_metadata", "-1", "-map_chapters", "-1",
             "-c:v", "copy", "-c:a", "aac", "-b:a", "160k",
@@ -248,8 +249,8 @@ def render_asmr_reel(spec: dict, output_dir: str | Path) -> dict:
         temp_video.replace(final_video)
         digest, size = hash_file(final_video)
         _run([
-            "ffmpeg", "-nostdin", "-loglevel", "error", "-ss", "0.3", "-i",
-            str(final_video), "-frames:v", "1", "-q:v", "2", "-y", str(thumbnail)
+            "ffmpeg", "-nostdin", "-loglevel", "error", "-ss", "0.3",
+            "-protocol_whitelist", "file", "-i", str(final_video), "-frames:v", "1", "-q:v", "2", "-y", str(thumbnail)
         ], timeout=40)
         manifest = {
             "rendererVersion": "asmr-1.1.0-sequential", "creativeId": creative_id,
