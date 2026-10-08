@@ -54,3 +54,21 @@
 - FFmpeg sem serviços pagos. Infra já existente pode ter cobrança de CPU/disco; não chamar toda computação de grátis.
 - Teste técnico com imagens/som artificiais **não comprova** qualidade comercial.
 - `main`, produção Railway, contas Instagram/TikTok, chaves e cobrança não serão alteradas nesta rodada.
+
+
+## 2026-10-07 — Integrity gate independente (reforço adicional)
+
+**Falha de desenho encontrada:** QA executado no render e hash no manifesto por si só não comprovam a integridade do MP4 e thumbnail *no momento em que forem consumidos*, por exemplo após cópia, retomada ou corrupção do disco.
+
+**Código adicionado:** \`verify_asmr_draft(output_dir)\`, verificação fail-closed dos 3 arquivos obrigatórios:
+- diretório e arquivos regulares, sem symlink no próprio caminho; manifesto JSON com limite de 256 KiB;
+- bloqueios \`publication=BLOCKED\`, \`editorial=PENDING_HUMAN_REVIEW\` e direitos autodeclarados ainda pendentes;
+- hash SHA-256 e tamanho real de MP4 e thumbnail, nunca só confiar no filename;
+- \`ffprobe\` lê codec/formato real (H.264/AAC, geometria 9:16, 24fps) e contagem de quadros decodificados do vídeo final;
+- compara plano de quadros/duração e diferença de duração entre áudio e vídeo;
+- reprova arquivo temporário, segmento órfão e manifesto parcial.
+O renderer aplica essa leitura novamente antes de retornar \`TECHNICAL_PASS\`. Nenhum upload/deploy/merge ou publicação é executado.
+
+**Prova automatizada:** além dos testes pré-existentes, casos de corrupção do vídeo, corrupção da thumbnail, liberação indevida \`APPROVED\`, órfão \`segment_99.mp4\`, adulteração do edit plan, manifesto ausente e caminho de diretório symlink. **Aprovação depende do CI deste novo commit**, não herda o status verde de commits anteriores.
+
+**Limites explicitados:** hash dentro do próprio manifesto **não é assinatura**: ator com acesso de escrita a ambos pode substituí-los. Um recurso que exponha estes arquivos a usuários externos precisa de root controlado e permissões de filesystem, isolamento do FFmpeg, etapas duráveis, readback via \`RailwayVolumeMediaStore.verify_object\` e envelope de autorização separado. SIGKILL antes do manifesto pode deixar órfãos; a verificação os bloqueia, mas limpeza/recovery ainda exige um supervisor.
