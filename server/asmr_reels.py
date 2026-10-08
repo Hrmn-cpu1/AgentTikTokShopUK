@@ -8,7 +8,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
+import math
 import re
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -17,12 +20,26 @@ from .media_storage import hash_file
 FPS = 24
 MAX_CLIPS = 8
 RIGHTS_BASES = {"OWNED_ORIGINAL", "CLIENT_AUTHORIZED", "LICENSED_COMMERCIAL"}
+VIDEO_SUFFIXES = {".mp4", ".mov", ".m4v", ".mkv", ".webm"}
+AUDIO_SUFFIXES = {".wav", ".m4a", ".aac", ".flac", ".mp3", ".ogg", ".opus"}
+MAX_SOURCE_BYTES = 1024 * 1024 * 1024
+MAX_SOURCE_PIXELS = 2160 * 3840
+logger = logging.getLogger(__name__)
 
 
-def _run(command: list[str], timeout: int = 240) -> subprocess.CompletedProcess:
-    result = subprocess.run(command, capture_output=True, text=True, timeout=timeout, check=False)
+def _run(command: list[str], timeout: int = 240) -> subprocess.CompletedProcess[str]:
+    """Run bounded commands without a shell; subprocess.run reaps processes on timeout."""
+    try:
+        result = subprocess.run(
+            command, stdin=subprocess.DEVNULL, capture_output=True, text=True,
+            encoding="utf-8", errors="replace", timeout=timeout, check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(f"media command timed out after {timeout}s: {command[0]}") from exc
+    except OSError as exc:
+        raise RuntimeError(f"media executable unavailable or could not start: {command[0]}") from exc
     if result.returncode != 0:
-        raise RuntimeError(f"media command failed: {result.stderr[-500:]}")
+        raise RuntimeError(f"media command failed ({result.returncode}): {result.stderr[-800:]}")
     return result
 
 
@@ -41,6 +58,11 @@ def _asset(raw: dict, media_type: str) -> tuple[Path, float, float, dict]:
     path = Path(str(raw.get("path") or "")).expanduser()
     if not path.is_file() or path.is_symlink():
         raise ValueError("asset must be an existing regular local file (not a symlink)")
+    extensions = VIDEO_SUFFIXES if media_type == "video" else AUDIO_SUFFIXES
+    if path.suffix.lower() not in extensions:
+        raise ValueError("unsupported local media format (playlists and remote protocols forbidden)")
+    if path.stat().st_size <= 0 or path.stat().st_size > MAX_SOURCE_BYTES:
+        raise ValueError("source media exceeds size policy")
     rights = raw.get("rights") or {}
     if (not isinstance(rights, dict) or rights.get("basis") not in RIGHTS_BASES
             or not isinstance(rights.get("evidence_id"), str)
@@ -51,7 +73,8 @@ def _asset(raw: dict, media_type: str) -> tuple[Path, float, float, dict]:
         seconds = float(raw["seconds"])
     except (KeyError, ValueError, TypeError) as exc:
         raise ValueError("asset start/seconds must be numeric") from exc
-    if not (0 <= start <= 3600 and 0 < seconds <= 60):
+    if not (math.isfinite(start) and math.isfinite(seconds)
+            and 0 <= start <= 3600 and 0 < seconds <= 60):
         raise ValueError("asset start/seconds outside safe limits")
     path = path.resolve()
     probe = _probe(path)
@@ -62,8 +85,9 @@ def _asset(raw: dict, media_type: str) -> tuple[Path, float, float, dict]:
         raise ValueError(f"{media_type} asset is too short: {path.name}")
     if media_type == "video":
         w, h = int(stream.get("width") or 0), int(stream.get("height") or 0)
-        if not w or not h or not 0.50 <= w / h <= 0.65:
-            raise ValueError("footage needs vertical review/crop before ASMR render")
+        if (not w or not h or w * h > MAX_SOURCE_PIXELS
+                or not 0.50 <= w / h <= 0.65):
+            raise ValueError("footage needs vertical review/crop or exceeds resolution policy")
     sha, size = hash_file(path)
     evidence = {"sha256": sha, "sizeBytes": size, "fileName": path.name,
                 "rightsBasis": rights["basis"], "evidenceId": rights["evidence_id"].strip(),
@@ -114,15 +138,17 @@ def render_asmr_reel(spec: dict, output_dir: str | Path) -> dict:
         raise ValueError("supported widths: 540 (draft), 1080 (export)")
     width, height = requested_width, round(requested_width * 16 / 9)
     target = Path(output_dir)
-    if target.exists() and any(target.iterdir()):
-        raise ValueError("output directory must be empty: no overwrites")
-    target.mkdir(parents=True, exist_ok=True)
+    # Exclusive mkdir is a job claim: no other render may write to this path.
+    # Reject even empty existing directories; never overwrite unrelated artifacts.
+    if target.exists():
+        raise ValueError("output directory must not exist: no overwrites")
+    target.mkdir(parents=True, exist_ok=False)
     temp_video = target / ".reel-incomplete.mp4"
     final_video = target / "reel.mp4"
     thumbnail = target / "thumbnail.jpg"
     manifest_file = target / "manifest.json"
 
-    command = ["ffmpeg", "-nostdin", "-loglevel", "error"]
+    command = ["ffmpeg", "-nostdin", "-loglevel", "error", "-filter_complex_threads", "2"]
     for path, _, _, _ in clips_checked:
         command.extend(["-i", str(path)])
     command.extend(["-i", str(audio[0])])
@@ -143,12 +169,18 @@ def render_asmr_reel(spec: dict, output_dir: str | Path) -> dict:
     command.extend([
         "-filter_complex", ";".join(filters), "-map", "[v]", "-map", "[a]",
         "-map_metadata", "-1", "-map_chapters", "-1",
-        "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-threads", "2",
         "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "160k",
-        "-movflags", "+faststart", "-y", str(temp_video),
+        "-t", f"{total:.3f}", "-movflags", "+faststart", "-n", str(temp_video),
     ])
     try:
         _run(command, timeout=360)
+        # Detect source substitution/modification between preflight and render.
+        all_sources = [*clips_checked, audio]
+        for original, _, _, evidence in all_sources:
+            digest_after, size_after = hash_file(original)
+            if (digest_after != evidence["sha256"] or size_after != evidence["sizeBytes"]):
+                raise RuntimeError(f"media source changed during render: {original.name}")
         probe = _probe(temp_video)
         streams = probe["streams"]
         video = next((s for s in streams if s["codec_type"] == "video"), {})
@@ -188,11 +220,19 @@ def render_asmr_reel(spec: dict, output_dir: str | Path) -> dict:
                             "publication": "BLOCKED"},
             "storageState": "LOCAL_DRAFT_NOT_DURABLY_PROMOTED",
         }
-        manifest_file.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+        manifest_temp = target / ".manifest-incomplete.json"
+        manifest_temp.write_text(
+            json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        manifest_temp.replace(manifest_file)
         return manifest
-    finally:
-        if temp_video.exists():
-            temp_video.unlink()
+    except BaseException:
+        # A crash or QA failure must never leave a valid-looking public artifact.
+        try:
+            shutil.rmtree(target)
+        except OSError:
+            logger.exception("ASMR draft cleanup failed: %s", target)
+        raise
 
 
 def main() -> None:
