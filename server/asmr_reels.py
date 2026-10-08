@@ -52,6 +52,44 @@ def _probe(path: Path) -> dict:
     return payload
 
 
+def _decode_frame_count(path: Path) -> int:
+    """Count decoded video frames; container header nb_frames alone is not enough."""
+    data = json.loads(_run([
+        "ffprobe", "-v", "error", "-protocol_whitelist", "file",
+        "-count_frames", "-select_streams", "v:0",
+        "-show_entries", "stream=nb_read_frames",
+        "-of", "json", str(path),
+    ], timeout=120).stdout)
+    streams = data.get("streams") or []
+    try:
+        value = int(streams[0]["nb_read_frames"])
+    except (IndexError, KeyError, ValueError, TypeError) as exc:
+        raise RuntimeError("could not verify decoded frame count") from exc
+    if value <= 0:
+        raise RuntimeError("decoded video is empty")
+    return value
+
+
+def _ebu_r128_summary(path: Path) -> dict[str, float]:
+    """Read-only audio analysis, not loudness normalization or a sound-quality claim."""
+    stderr = _run([
+        "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "info",
+        "-protocol_whitelist", "file", "-i", str(path),
+        "-vn", "-af", "ebur128=peak=true", "-f", "null", "-",
+    ], timeout=120).stderr
+    if "Summary:" not in stderr:
+        raise RuntimeError("EBU R128 audio analysis did not produce a summary")
+    summary = stderr.rsplit("Summary:", 1)[1]
+    integrated = re.search(r"Integrated loudness:\s*I:\s*(-?[\d.]+)\s*LUFS", summary)
+    true_peak = re.search(r"True peak:\s*Peak:\s*(-?[\d.]+)\s*dBFS", summary)
+    if not integrated or not true_peak:
+        raise RuntimeError("EBU R128 loudness/true-peak summary is incomplete")
+    i, peak = float(integrated.group(1)), float(true_peak.group(1))
+    if not math.isfinite(i) or not math.isfinite(peak):
+        raise RuntimeError("EBU R128 measurement is non-finite")
+    return {"integratedLufs": i, "truePeakDbFS": peak}
+
+
 def _asset(raw: dict, media_type: str) -> tuple[Path, float, float, dict]:
     if not isinstance(raw, dict):
         raise ValueError("each media asset must be an object")
@@ -234,8 +272,17 @@ def render_asmr_reel(spec: dict, output_dir: str | Path) -> dict:
         sound = next((s for s in streams if s["codec_type"] == "audio"), {})
         duration = float(probe["format"]["duration"])
         peak = _audio_peak(temp_video)
+        decoded_frames = _decode_frame_count(temp_video)
+        r128 = _ebu_r128_summary(temp_video)
         has_black = _scan_black(temp_video)
+        av_delta = abs(
+            float(video.get("duration") or duration) -
+            float(sound.get("duration") or duration)
+        )
         checks = {
+            "decoded_frame_count": decoded_frames == frame_total,
+            "audio_video_sync": av_delta <= 0.25,
+            "true_peak_headroom": r128["truePeakDbFS"] <= -1.0,
             "vertical_h264": video.get("codec_name") == "h264" and
                 (video.get("width"), video.get("height")) == (width, height),
             "real_audio_aac": sound.get("codec_name") == "aac" and peak is not None and peak > -55,
@@ -253,13 +300,16 @@ def render_asmr_reel(spec: dict, output_dir: str | Path) -> dict:
             "-protocol_whitelist", "file", "-i", str(final_video), "-frames:v", "1", "-q:v", "2", "-y", str(thumbnail)
         ], timeout=40)
         manifest = {
-            "rendererVersion": "asmr-1.1.0-sequential", "creativeId": creative_id,
+            "rendererVersion": "asmr-1.2.0-r128-frame-verified", "creativeId": creative_id,
             "format": "mp4", "width": width, "height": height, "aspectRatio": "9:16",
             "fps": FPS, "durationSeconds": round(duration, 3), "sceneCount": len(clips),
             "videoCodec": "h264", "audioCodec": "aac", "audioSource": "REAL_OPERATOR_SUPPLIED",
             "narrationGenerated": False, "cloudProviderUsed": False,
             "costPolicy": "NO_PAID_PROVIDERS", "sha256": digest, "sizeBytes": size,
             "thumbnail": thumbnail.name, "audioPeakDbFS": peak,
+            "decodedFrameCount": decoded_frames,
+            "audioVideoDurationMismatchSeconds": round(av_delta, 6),
+            "audioAnalysis": r128,
             "pipeline": "SEQUENTIAL_H264_ENCODE_CONCAT_STREAM_COPY",
             "editDecisionList": edit_decisions,
             "audioInSeconds": audio[1],
