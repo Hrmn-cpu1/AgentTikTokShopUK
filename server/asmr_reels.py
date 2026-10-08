@@ -17,6 +17,7 @@ import subprocess
 from pathlib import Path
 
 from .media_storage import hash_file
+from .asmr_recovery import mark_asmr_job
 
 FPS = 24
 MAX_CLIPS = 8
@@ -194,6 +195,7 @@ def render_asmr_reel(spec: dict, output_dir: str | Path) -> dict:
     frame_total = 0
     edit_decisions: list[dict[str, object]] = []
     try:
+        mark_asmr_job(target, creative_id)
         for index, (source, start, seconds, _) in enumerate(clips_checked):
             count = round(seconds * FPS)
             if count < 1:
