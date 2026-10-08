@@ -48,6 +48,12 @@ def test_renders_real_audio_vertical_mp4_with_hash_and_nonpublication_gate(tmp_p
     assert hash_file(video) == (manifest["sha256"], manifest["sizeBytes"])
     assert (manifest["width"], manifest["height"], manifest["aspectRatio"]) == (540, 960, "9:16")
     assert manifest["sceneCount"] == 2
+    assert manifest["rendererVersion"] == "asmr-1.1.0-sequential"
+    assert manifest["pipeline"] == "SEQUENTIAL_H264_ENCODE_CONCAT_STREAM_COPY"
+    assert [x["outputFrames"] for x in manifest["editDecisionList"]] == [72, 72]
+    assert manifest["creativeIntent"] == "UNSPECIFIED_REQUIRES_EDITORIAL_REVIEW"
+    assert not list(target.glob("segment_*.mp4"))
+    assert not (target / "combined_video.mp4").exists()
     assert manifest["durationSeconds"] >= 6
     assert manifest["videoCodec"] == "h264" and manifest["audioCodec"] == "aac"
     assert manifest["cloudProviderUsed"] is False
