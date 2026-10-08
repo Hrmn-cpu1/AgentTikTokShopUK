@@ -106,3 +106,58 @@ def test_promote_rejects_wrong_creative_identity_and_small_quota(tmp_path, draft
     params["creative_id"] = "test-asmr-client-a"
     with pytest.raises(MediaQuotaExceeded, match="artifact quota"):
         promote_verified_asmr_draft(**params)
+
+
+
+@pytest.mark.skipif(not shutil.which("ffmpeg") or not shutil.which("ffprobe"),
+                    reason="FFmpeg required")
+def test_distinct_concurrent_attempts_converge_to_same_object(tmp_path, draft):
+    from concurrent.futures import ThreadPoolExecutor
+    target, _ = draft
+    store = RailwayVolumeMediaStore(
+        tmp_path / "volume", max_artifact_bytes=12_000_000,
+        max_total_bytes=30_000_000,
+    )
+
+    def run(attempt: int):
+        return promote_verified_asmr_draft(
+            draft_dir=target, store=store, creative_id="test-asmr-client-a",
+            render_job_id="render004", render_attempt_id=f"attempt{attempt:03}",
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        receipts = list(pool.map(run, (1, 2)))
+    assert receipts[0] == receipts[1]
+    assert receipts[0].publication == "BLOCKED"
+    assert store.verify_object(
+        receipts[0].object_key,
+        expected_sha256=receipts[0].sha256,
+        expected_size_bytes=receipts[0].size_bytes,
+    ).path.is_file()
+
+
+@pytest.mark.skipif(not shutil.which("ffmpeg") or not shutil.which("ffprobe"),
+                    reason="FFmpeg required")
+def test_corrupted_copy_cannot_be_promoted(tmp_path, draft, monkeypatch):
+    import server.asmr_volume_bridge as bridge
+    target, _ = draft
+    store = RailwayVolumeMediaStore(
+        tmp_path / "volume", max_artifact_bytes=12_000_000,
+        max_total_bytes=30_000_000,
+    )
+    original = bridge.shutil.copyfileobj
+
+    def corrupt_copy(source, target_file, length=0):
+        original(source, target_file, length)
+        target_file.write(b"corrupted-during-stage")
+
+    monkeypatch.setattr(bridge.shutil, "copyfileobj", corrupt_copy)
+    with pytest.raises(MediaArtifactCorrupt, match="source changed"):
+        promote_verified_asmr_draft(
+            draft_dir=target, store=store, creative_id="test-asmr-client-a",
+            render_job_id="render005", render_attempt_id="attempt005",
+        )
+    assert not store.staged_attempts("render005") or all(
+        not store.object_path(key).joinpath("growth.mp4").exists()
+        for key in store.staged_attempts("render005")
+    )
