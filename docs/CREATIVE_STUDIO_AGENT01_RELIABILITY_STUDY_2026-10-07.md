@@ -72,3 +72,20 @@ O renderer aplica essa leitura novamente antes de retornar \`TECHNICAL_PASS\`. N
 **Prova automatizada:** além dos testes pré-existentes, casos de corrupção do vídeo, corrupção da thumbnail, liberação indevida \`APPROVED\`, órfão \`segment_99.mp4\`, adulteração do edit plan, manifesto ausente e caminho de diretório symlink. **Aprovação depende do CI deste novo commit**, não herda o status verde de commits anteriores.
 
 **Limites explicitados:** hash dentro do próprio manifesto **não é assinatura**: ator com acesso de escrita a ambos pode substituí-los. Um recurso que exponha estes arquivos a usuários externos precisa de root controlado e permissões de filesystem, isolamento do FFmpeg, etapas duráveis, readback via \`RailwayVolumeMediaStore.verify_object\` e envelope de autorização separado. SIGKILL antes do manifesto pode deixar órfãos; a verificação os bloqueia, mas limpeza/recovery ainda exige um supervisor.
+
+
+## 2026-10-07 — Conexão opt-in ao volume durável (não está em produção)
+\`server/asmr_volume_bridge.py\` expõe \`promote_verified_asmr_draft\`. Fluxo:
+1. Reavalia o draft com \`verify_asmr_draft\`, incluindo checks de hash SHA-256 de reel e thumbnail, schema e bloqueio editorial.
+2. Exige creative ID idêntico ao do manifesto; gera chave via \`artifact_object_key\`.
+3. Tenta readback do objeto já promovido primeiro (**replay idempotente**); se corrompido, falha sem sobrescrever.
+4. Exige quotas e preflight do \`RailwayVolumeMediaStore\` já existente.
+5. Copia em arquivo exclusivo temporário, fsync, valida hash e tamanho, cria hardlink exclusivo \`growth.mp4\` no staging (nome exigido pela API atual), fsync do diretório.
+6. Promove pelo método existente \`promote_staging\`, verifica o objeto persistido via \`verify_object\` e somente então remove staging.
+7. Retorna receipt \`VOLUME_READBACK_VERIFIED_PENDING_REVIEW\` e \`publication=BLOCKED\`. Não escreve aprovação, não publica, não aciona workers/API, não configura Railway.
+
+**Testes negativos:** staging adulterado, creative ID divergente, quota insuficiente, corrupção durante a cópia, chamadas simultâneas com tentativas diferentes, repetição idempotente. O sucesso da suíte deste commit deve ser conferido antes de liberar o PR; testes de volume temporário não substituem ensaios reais de reinício da instância Railway.
+
+**Riscos que permanecem:** utilização simultânea de um mesmo attempt ID precisa ser protegida pelo lease/fencing do coordenador; arquivos \`.upload-tmp-*.mp4\` órfãos após SIGKILL devem ser limpos por reaper seguro; medir espaço físico/quotas sob concorrência; deploy, binding do worker e publicação permanecem RED. O objeto armazenado é **um draft tecnicamente verificado**, não um Reel aprovado editorialmente nem prova de licença comercial.
+
+**Padrão excelente exige prova distinta para cada etapa**, sem misturar: codec/QC, integridade SHA, persistência e recuperação, autorização comercial e desempenho de retenção real.
