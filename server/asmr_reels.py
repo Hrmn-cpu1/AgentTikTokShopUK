@@ -147,35 +147,71 @@ def render_asmr_reel(spec: dict, output_dir: str | Path) -> dict:
     thumbnail = target / "thumbnail.jpg"
     manifest_file = target / "manifest.json"
 
-    command = ["ffmpeg", "-nostdin", "-loglevel", "error", "-filter_complex_threads", "2"]
-    for path, _, _, _ in clips_checked:
-        command.extend(["-i", str(path)])
-    command.extend(["-i", str(audio[0])])
-    filters = []
-    for index, (_, start, seconds, _) in enumerate(clips_checked):
-        filters.append(
-            f"[{index}:v]trim=start={start:.3f}:duration={seconds:.3f},"
-            f"setpts=PTS-STARTPTS,scale={width}:{height}:force_original_aspect_ratio=increase,"
-            f"crop={width}:{height},setsar=1,fps={FPS},format=yuv420p[v{index}]"
-        )
-    filters.append("".join(f"[v{i}]" for i in range(len(clips_checked))) +
-                   f"concat=n={len(clips_checked)}:v=1:a=0[v]")
-    filters.append(
-        f"[{len(clips_checked)}:a]atrim=start={audio[1]:.3f}:duration={total:.3f},"
-        "asetpts=PTS-STARTPTS,aresample=44100:async=1:first_pts=0,"
-        "highpass=f=45,alimiter=limit=0.96[a]"
-    )
-    command.extend([
-        "-filter_complex", ";".join(filters), "-map", "[v]", "-map", "[a]",
-        "-map_metadata", "-1", "-map_chapters", "-1",
-        "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-threads", "2",
-        "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "160k",
-        "-t", f"{total:.3f}", "-movflags", "+faststart", "-n", str(temp_video),
-    ])
-    # Atomic job claim occurs only after all pre-render validation and command construction.
-    target.mkdir(parents=True, exist_ok=False)
+    # Sequential clip transcodes bound decoder/filter memory even for 8 UHD sources.
+    # Normalized H.264 segments are then stream-copied; no second video encode.
+    target.mkdir(parents=True, exist_ok=False)  # Atomic exclusive job claim.
+    logger.info("asmr_render_start creative=%s clips=%d width=%d", creative_id, len(clips), width)
+    segments: list[Path] = []
+    frame_total = 0
     try:
-        _run(command, timeout=360)
+        for index, (source, start, seconds, _) in enumerate(clips_checked):
+            count = round(seconds * FPS)
+            if count < 1:
+                raise ValueError("scene duration is shorter than a single output frame")
+            segment = target / f"segment_{index:02}.mp4"
+            scene_filter = (
+                f"trim=start={start:.6f}:duration={seconds:.6f},"
+                f"setpts=PTS-STARTPTS,scale={width}:{height}:force_original_aspect_ratio=increase,"
+                f"crop={width}:{height},setsar=1,fps={FPS},format=yuv420p"
+            )
+            _run([
+                "ffmpeg", "-nostdin", "-loglevel", "error",
+                "-i", str(source), "-map", "0:v:0", "-vf", scene_filter,
+                "-an", "-frames:v", str(count), "-map_metadata", "-1", "-map_chapters", "-1",
+                "-c:v", "libx264", "-threads", "2", "-preset", "veryfast",
+                "-crf", "23", "-pix_fmt", "yuv420p", "-video_track_timescale", "12288",
+                "-movflags", "+faststart", "-n", str(segment),
+            ], timeout=240)
+            segment_probe = _probe(segment)
+            segment_stream = next((st for st in segment_probe["streams"]
+                                   if st.get("codec_type") == "video"), {})
+            if (segment_stream.get("codec_name") != "h264"
+                    or int(segment_stream.get("nb_frames") or 0) != count
+                    or int(segment_stream.get("width") or 0) != width
+                    or int(segment_stream.get("height") or 0) != height):
+                raise ValueError(f"segment frame or format mismatch at index {index}")
+            frame_total += count
+            segments.append(segment)
+
+        target_duration = frame_total / FPS
+        if not 6 <= target_duration <= 60.01:
+            raise ValueError("frame-quantized reel duration outside 6-60s")
+        list_file = target / "segments.ffconcat"
+        list_file.write_text(
+            "\n".join(f"file '{path.name}'" for path in segments) + "\n", encoding="utf-8"
+        )
+        combined_video = target / "combined_video.mp4"
+        _run([
+            "ffmpeg", "-nostdin", "-loglevel", "error",
+            "-f", "concat", "-safe", "1", "-i", str(list_file),
+            "-map", "0:v:0", "-c:v", "copy", "-an",
+            "-map_metadata", "-1", "-map_chapters", "-1",
+            "-movflags", "+faststart", "-n", str(combined_video),
+        ], timeout=90)
+        audio_filter = (
+            f"[1:a]atrim=start={audio[1]:.6f}:duration={target_duration:.6f},"
+            "asetpts=PTS-STARTPTS,aresample=44100:async=1:first_pts=0,"
+            "highpass=f=45,alimiter=limit=0.96[a]"
+        )
+        _run([
+            "ffmpeg", "-nostdin", "-loglevel", "error",
+            "-i", str(combined_video), "-i", str(audio[0]),
+            "-filter_complex", audio_filter, "-map", "0:v:0", "-map", "[a]",
+            "-map_metadata", "-1", "-map_chapters", "-1",
+            "-c:v", "copy", "-c:a", "aac", "-b:a", "160k",
+            "-t", f"{target_duration:.6f}", "-movflags", "+faststart",
+            "-n", str(temp_video),
+        ], timeout=150)
         # Detect source substitution/modification between preflight and render.
         all_sources = [*clips_checked, audio]
         for original, _, _, evidence in all_sources:
@@ -226,6 +262,9 @@ def render_asmr_reel(spec: dict, output_dir: str | Path) -> dict:
             json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8"
         )
         manifest_temp.replace(manifest_file)
+        for intermediate in (*segments, list_file, combined_video):
+            intermediate.unlink()
+        logger.info("asmr_render_verified creative=%s bytes=%d sha256=%s", creative_id, size, digest)
         return manifest
     except BaseException:
         # A crash or QA failure must never leave a valid-looking public artifact.
