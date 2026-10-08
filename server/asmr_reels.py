@@ -142,7 +142,6 @@ def render_asmr_reel(spec: dict, output_dir: str | Path) -> dict:
     # Reject even empty existing directories; never overwrite unrelated artifacts.
     if target.exists():
         raise ValueError("output directory must not exist: no overwrites")
-    target.mkdir(parents=True, exist_ok=False)
     temp_video = target / ".reel-incomplete.mp4"
     final_video = target / "reel.mp4"
     thumbnail = target / "thumbnail.jpg"
@@ -173,6 +172,8 @@ def render_asmr_reel(spec: dict, output_dir: str | Path) -> dict:
         "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "160k",
         "-t", f"{total:.3f}", "-movflags", "+faststart", "-n", str(temp_video),
     ])
+    # Atomic job claim occurs only after all pre-render validation and command construction.
+    target.mkdir(parents=True, exist_ok=False)
     try:
         _run(command, timeout=360)
         # Detect source substitution/modification between preflight and render.
